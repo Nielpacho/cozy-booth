@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Camera, CameraOff, Download, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Timer, Trash2, Undo2, SwitchCamera, Check, Plus, X } from 'lucide-react'
+import { Camera, CameraOff, Download, Film, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Trash2, Undo2, SwitchCamera, Check } from 'lucide-react'
 
 type Shot = { id: number; url: string }
 type Decor = { id: number; emoji: string; x: number; y: number; size: number; rotation: number }
 type Filter = 'natural' | 'warm' | 'pastel' | 'mono' | 'retro' | 'glow'
+type ExportFormat = 'png' | 'jpeg'
+type FrameStyle = 'classic' | 'vintage' | 'minimal'
 
+const stripDesigns = [
+  { id: 'cozy-classic', name: 'Cozy Classic', mood: 'CLASSIC', background: '#f7efe5', accent: '#bd8179', frameStyle: 'classic' as FrameStyle, motif: '♡' },
+  { id: 'blush-bloom', name: 'Blush Bloom', mood: 'SOFT', background: '#f8e6e7', accent: '#c76f83', frameStyle: 'classic' as FrameStyle, motif: '✿' },
+  { id: 'sage-garden', name: 'Sage Garden', mood: 'BOTANICAL', background: '#e8ecdf', accent: '#788b70', frameStyle: 'vintage' as FrameStyle, motif: '❀' },
+  { id: 'lavender-dream', name: 'Lavender Dream', mood: 'DREAMY', background: '#ebe6f1', accent: '#9180a8', frameStyle: 'classic' as FrameStyle, motif: '✦' },
+  { id: 'vintage-film', name: 'Vintage Film', mood: 'RETRO', background: '#e8d8c3', accent: '#896846', frameStyle: 'vintage' as FrameStyle, motif: '✧' },
+  { id: 'clean-minimal', name: 'Clean Minimal', mood: 'MINIMAL', background: '#ffffff', accent: '#6f6862', frameStyle: 'minimal' as FrameStyle, motif: '·' },
+]
 const filterCss: Record<Filter, string> = {
   natural: 'none',
   warm: 'sepia(.22) saturate(1.2) contrast(1.02)',
@@ -18,6 +28,11 @@ const emojis = ['💗', '✨', '🎀', '🌷', '☁️', '⭐', '🧸', '♡', '
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordedChunksRef = useRef<Blob[]>([])
+  const recordingCompletedRef = useRef(false)
+  const videoSessionCompleteRef = useRef(false)
+  const videoUrlRef = useRef<string | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const [started, setStarted] = useState(false)
@@ -31,7 +46,8 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState<Filter>('natural')
   const [bg, setBg] = useState('#f7efe5')
-  const [frameStyle, setFrameStyle] = useState('classic')
+  const [frameStyle, setFrameStyle] = useState<FrameStyle>('classic')
+  const [selectedDesign, setSelectedDesign] = useState('cozy-classic')
   const [caption, setCaption] = useState('little moments, lovely memories')
   const [title, setTitle] = useState('COZY BOOTH')
   const [decorations, setDecorations] = useState<Decor[]>([])
@@ -39,13 +55,84 @@ export default function App() {
   const [dragging, setDragging] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'design' | 'stickers'>('design')
   const [notice, setNotice] = useState('')
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('png')
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoExtension, setVideoExtension] = useState('webm')
+  const [videoRecording, setVideoRecording] = useState(false)
+
+  const clearVideo = useCallback(() => {
+    if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current)
+    videoUrlRef.current = null
+    setVideoUrl(null)
+  }, [])
+
+  const stopVideoRecording = useCallback((completed: boolean) => {
+    const recorder = recorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
+    recordingCompletedRef.current = completed
+    recorder.stop()
+  }, [])
+
+  const startVideoRecording = useCallback(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') return
+    if (typeof MediaRecorder === 'undefined') {
+      setCameraError('Video recording is not supported in this browser. You can still take photos.')
+      return
+    }
+
+    const mimeType = typeof MediaRecorder.isTypeSupported === 'function'
+      ? ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+        .find(type => MediaRecorder.isTypeSupported(type))
+      : undefined
+
+    try {
+      clearVideo()
+      recordedChunksRef.current = []
+      recordingCompletedRef.current = false
+      videoSessionCompleteRef.current = false
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data)
+      }
+      recorder.onstop = () => {
+        const completed = recordingCompletedRef.current
+        recordingCompletedRef.current = false
+        videoSessionCompleteRef.current = completed
+        recorderRef.current = null
+        setVideoRecording(false)
+        if (completed && recordedChunksRef.current.length) {
+          const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' })
+          if (blob.size > 0) {
+            const url = URL.createObjectURL(blob)
+            videoUrlRef.current = url
+            setVideoUrl(url)
+            setVideoExtension(blob.type.includes('mp4') ? 'mp4' : 'webm')
+          }
+        }
+        recordedChunksRef.current = []
+      }
+      recorder.onerror = () => {
+        recordingCompletedRef.current = false
+        setCameraError('Video recording stopped unexpectedly. Your photos are still available.')
+      }
+      recorder.start(1000)
+      recorderRef.current = recorder
+      setVideoRecording(true)
+    } catch (error) {
+      console.error('Video recording error:', error)
+      setCameraError('Video recording could not start. You can still take photos.')
+    }
+  }, [clearVideo])
 
   const stopCamera = useCallback(() => {
+    stopVideoRecording(false)
     streamRef.current?.getTracks().forEach(track => track.stop())
     streamRef.current = null
     if (videoRef.current) videoRef.current.srcObject = null
     setCameraOn(false)
-  }, [])
+  }, [stopVideoRecording])
 
   const startCamera = useCallback(async (mode = facing) => {
     setCameraError('')
@@ -93,17 +180,20 @@ export default function App() {
   }, [cameraOn])
 
   useEffect(() => () => {
+    recordingCompletedRef.current = false
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop()
     streamRef.current?.getTracks().forEach(track => track.stop())
+    if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current)
   }, [])
 
   const takePhoto = useCallback(() => {
     const video = videoRef.current
-    if (!video || !video.videoWidth) return
+    if (!video || !video.videoWidth) return false
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    if (!ctx) return false
     if (facing === 'user') {
       ctx.translate(canvas.width, 0)
       ctx.scale(-1, 1)
@@ -111,21 +201,27 @@ export default function App() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     const url = canvas.toDataURL('image/jpeg', .94)
     setShots(prev => [...prev, { id: Date.now() + Math.random(), url }])
+    return true
   }, [facing])
 
   const beginCapture = async () => {
     if (!cameraOn) { await startCamera(); return }
     if (busy || shots.length >= count) return
+    if (!videoRecording && (shots.length === 0 || videoUrl || videoSessionCompleteRef.current)) startVideoRecording()
     setBusy(true)
-    for (let n = seconds; n >= 1; n--) {
-      setCountdown(n)
-      await new Promise(resolve => window.setTimeout(resolve, 1000))
+    try {
+      for (let n = seconds; n >= 1; n--) {
+        setCountdown(n)
+        await new Promise(resolve => window.setTimeout(resolve, 1000))
+      }
+      setCountdown(0)
+      await new Promise(resolve => window.setTimeout(resolve, 350))
+      const captured = takePhoto()
+      if (captured && shots.length + 1 >= count) stopVideoRecording(true)
+    } finally {
+      setCountdown(null)
+      setBusy(false)
     }
-    setCountdown(0)
-    await new Promise(resolve => window.setTimeout(resolve, 350))
-    takePhoto()
-    setCountdown(null)
-    setBusy(false)
   }
 
   const captureRemaining = shots.length < count
@@ -134,8 +230,17 @@ export default function App() {
   }])
 
   const stripDimensions = useMemo(() => ({ width: 600, height: Math.round(600 * (count * .75 + .9)) }), [count])
+  const currentDesign = stripDesigns.find(design => design.id === selectedDesign) ?? stripDesigns[0]
 
-  const drawStrip = useCallback(async (exporting = false) => {
+  const chooseDesign = (designId: string) => {
+    const design = stripDesigns.find(item => item.id === designId)
+    if (!design) return
+    setSelectedDesign(design.id)
+    setBg(design.background)
+    setFrameStyle(design.frameStyle)
+  }
+
+  const drawStrip = useCallback(async () => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -146,8 +251,8 @@ export default function App() {
     canvas.height = H
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, W, H)
-    const pad = frameStyle === 'minimal' ? 20 : 34
-    const gap = 14
+    const pad = frameStyle === 'minimal' ? 24 : frameStyle === 'vintage' ? 38 : 34
+    const gap = frameStyle === 'minimal' ? 10 : frameStyle === 'vintage' ? 18 : 14
     const footer = 104
     const photoW = W - pad * 2
     const photoH = (H - pad * 2 - footer - gap * (count - 1)) / count
@@ -156,8 +261,9 @@ export default function App() {
       const shot = shots[i]
       const x = pad
       const y = pad + i * (photoH + gap)
+      const border = frameStyle === 'minimal' ? 0 : frameStyle === 'vintage' ? 9 : 5
       ctx.fillStyle = frameStyle === 'vintage' ? '#fffaf0' : '#ffffff'
-      ctx.fillRect(x - (frameStyle === 'minimal' ? 0 : 5), y - (frameStyle === 'minimal' ? 0 : 5), photoW + (frameStyle === 'minimal' ? 0 : 10), photoH + (frameStyle === 'minimal' ? 0 : 10))
+      ctx.fillRect(x - border, y - border, photoW + border * 2, photoH + border * 2)
       if (shot) {
         const img = new Image()
         img.src = shot.url
@@ -180,14 +286,26 @@ export default function App() {
         ctx.fillText('your photo goes here', W / 2, y + photoH / 2)
       }
     }
-    ctx.fillStyle = '#765c4d'
+    ctx.fillStyle = currentDesign.accent
     ctx.textAlign = 'center'
-    ctx.font = '600 19px "DM Sans", sans-serif'
+    ctx.font = frameStyle === 'vintage' ? '600 19px "Playfair Display", serif' : '600 19px "DM Sans", sans-serif'
     ctx.fillText(title.toUpperCase(), W / 2, H - 73)
     ctx.font = 'italic 17px "Playfair Display", serif'
     ctx.fillText(caption.slice(0, 48), W / 2, H - 43)
     ctx.font = '13px "DM Sans", sans-serif'
     ctx.fillText(new Date().toLocaleDateString(), W / 2, H - 17)
+
+    if (frameStyle !== 'minimal') {
+      ctx.save()
+      ctx.fillStyle = currentDesign.accent
+      ctx.font = '22px serif'
+      ctx.textAlign = 'center'
+      for (let i = 0; i < count; i++) {
+        const y = pad + i * (photoH + gap) + photoH - 12
+        ctx.fillText(currentDesign.motif, W - pad - 13, y)
+      }
+      ctx.restore()
+    }
 
     decorations.forEach(d => {
       ctx.save()
@@ -199,22 +317,40 @@ export default function App() {
       ctx.fillText(d.emoji, 0, 0)
       ctx.restore()
     })
-    if (exporting) return canvas.toDataURL('image/png')
-  }, [bg, caption, count, decorations, filter, frameStyle, shots, stripDimensions, title])
+    return canvas
+  }, [bg, caption, count, currentDesign, decorations, filter, frameStyle, shots, stripDimensions, title])
 
   useEffect(() => { void drawStrip() }, [drawStrip])
 
   const download = async () => {
-    const data = await drawStrip(true)
-    if (!data) return
-    const link = document.createElement('a')
-    link.download = 'cozy-booth-photo-strip.png'
-    link.href = data
-    link.click()
-    setNotice('Your lovely memories are ready! ♡')
+    try {
+      const canvas = await drawStrip()
+      if (!canvas) return
+      const mimeType = exportFormat === 'png' ? 'image/png' : 'image/jpeg'
+      const blob = await new Promise<Blob | null>(resolve => {
+        canvas.toBlob(resolve, mimeType, exportFormat === 'jpeg' ? .94 : undefined)
+      })
+      if (!blob) {
+        setNotice(`Could not create the ${exportFormat.toUpperCase()} download. Please try again.`)
+        return
+      }
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.download = `cozy-booth-photo-strip.${exportFormat === 'jpeg' ? 'jpg' : 'png'}`
+      link.href = url
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice(`Your lovely memories are ready as ${exportFormat.toUpperCase()}! ♡`)
+    } catch (error) {
+      console.error('Photo strip export error:', error)
+      setNotice('The photo strip could not be downloaded. Please try again.')
+    }
   }
 
   const reset = () => {
+    stopVideoRecording(false)
+    videoSessionCompleteRef.current = false
+    clearVideo()
     setShots([])
     setDecorations([])
     setNotice('')
@@ -291,23 +427,49 @@ export default function App() {
               </div>
               {cameraError && <div className="error-box">{cameraError}</div>}
               <div className="camera-settings">
-                <label>PHOTOS PER STRIP<select value={count} onChange={e => { setCount(Number(e.target.value)); setShots([]) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option><option value={6}>6 photos</option></select></label>
-                <label>COUNTDOWN<select value={seconds} onChange={e => setSeconds(Number(e.target.value))}><option value={3}>3 seconds</option><option value={5}>5 seconds</option><option value={10}>10 seconds</option></select></label>
+                <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { setCount(Number(e.target.value)); setShots([]) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option><option value={6}>6 photos</option></select></label>
+                <label>COUNTDOWN<select value={seconds} disabled={busy} onChange={e => setSeconds(Number(e.target.value))}><option value={3}>3 seconds</option><option value={5}>5 seconds</option><option value={10}>10 seconds</option></select></label>
               </div>
               <div className="capture-progress"><div className="progress-label"><span>PHOTO PROGRESS</span><strong>{shots.length} / {count}</strong></div><div className="progress-track"><div style={{ width: `${shots.length / count * 100}%` }}/></div></div>
               <div className="capture-actions">
                 <button className="primary-btn capture-btn" disabled={busy || (!cameraOn && false) || !captureRemaining} onClick={beginCapture}><Camera size={17}/>{cameraOn ? (busy ? 'Get ready…' : captureRemaining ? 'Take a photo' : 'All photos taken!') : 'Enable camera'}</button>
-                <button className="icon-btn" title="Switch camera" aria-label="Switch camera" onClick={() => { const next = facing === 'user' ? 'environment' : 'user'; setFacing(next); if (cameraOn) void startCamera(next) }}><SwitchCamera size={18}/></button>
+                <button className="icon-btn" disabled={busy || videoRecording} title="Switch camera" aria-label="Switch camera" onClick={() => { const next = facing === 'user' ? 'environment' : 'user'; setFacing(next); if (cameraOn) void startCamera(next) }}><SwitchCamera size={18}/></button>
               </div>
               <div className="small-actions">
-                <button onClick={() => setShots(s => s.slice(0, -1))} disabled={!shots.length}><Undo2 size={14}/> Undo last photo</button>
-                <button onClick={reset} disabled={!shots.length && !decorations.length}><RefreshCw size={14}/> Retake all</button>
-                <button onClick={stopCamera} disabled={!cameraOn}><CameraOff size={14}/> Turn camera off</button>
+                <button onClick={() => setShots(s => s.slice(0, -1))} disabled={!shots.length || busy}><Undo2 size={14}/> Undo last photo</button>
+                <button onClick={reset} disabled={(!shots.length && !decorations.length) || busy || videoRecording}><RefreshCw size={14}/> Retake all</button>
+                <button onClick={stopCamera} disabled={!cameraOn || busy || videoRecording}><CameraOff size={14}/> Turn camera off</button>
               </div>
+              {videoRecording && <div className="recording-note"><i/> Recording the photo session — it will stop when your strip is complete.</div>}
             </section>
 
             <section className="panel editor-panel">
               <div className="panel-heading"><div><span className="step">02</span><h3>Your photo strip</h3></div><span className="live-label"><span/> LIVE PREVIEW</span></div>
+              <div className="design-gallery">
+                <div className="design-gallery-heading">
+                  <div><label className="tool-label">PICK YOUR STRIP DESIGN</label><span>Choose a look to preview it on your strip.</span></div>
+                  <span>{stripDesigns.length} designs</span>
+                </div>
+                <div className="design-gallery-list">
+                  {stripDesigns.map(design => <button
+                    key={design.id}
+                    type="button"
+                    className={`design-card ${selectedDesign === design.id ? 'selected' : ''}`}
+                    aria-pressed={selectedDesign === design.id}
+                    onClick={() => chooseDesign(design.id)}
+                  >
+                    <span className={`design-card-preview ${design.id}`} style={{ backgroundColor: design.background }}>
+                      <span className="design-mini-strip">
+                        <i/><i/><i/>
+                        <b>{design.motif}</b>
+                      </span>
+                    </span>
+                    <span className="design-card-name">{design.name}</span>
+                    <span className="design-card-mood">{design.mood}</span>
+                    {selectedDesign === design.id && <span className="design-card-check"><Check size={11}/></span>}
+                  </button>)}
+                </div>
+              </div>
               <div className="editor-layout">
                 <div className="strip-stage">
                   <div className="strip-wrap" ref={previewRef} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}>
@@ -320,7 +482,7 @@ export default function App() {
                   <div className="tabs"><button className={activeTab === 'design' ? 'active' : ''} onClick={() => setActiveTab('design')}><Settings2 size={14}/> Design</button><button className={activeTab === 'stickers' ? 'active' : ''} onClick={() => setActiveTab('stickers')}><Sparkles size={14}/> Stickers</button></div>
                   {activeTab === 'design' ? <>
                     <label className="tool-label">FRAME STYLE</label>
-                    <div className="choice-row">{['classic', 'vintage', 'minimal'].map(v => <button key={v} className={`choice ${frameStyle === v ? 'selected' : ''}`} onClick={() => setFrameStyle(v)}>{v}</button>)}</div>
+                    <div className="choice-row">{(['classic', 'vintage', 'minimal'] as FrameStyle[]).map(v => <button key={v} className={`choice ${frameStyle === v ? 'selected' : ''}`} onClick={() => setFrameStyle(v)}>{v}</button>)}</div>
                     <label className="tool-label">BACKGROUND</label>
                     <div className="swatches">{['#f7efe5','#f5dfe0','#ead9c8','#e6e8dc','#e6e1ed','#ffffff','#d9c3aa'].map(c => <button key={c} aria-label={`Background ${c}`} className={`swatch ${bg === c ? 'picked' : ''}`} style={{ background: c }} onClick={() => setBg(c)}/>)}</div>
                     <label className="tool-label">PHOTO FILTER</label>
@@ -335,10 +497,23 @@ export default function App() {
                     <div className="choice-row"><button className="choice" onClick={() => setDecorations(p => p.map(d => ({...d,size:Math.max(16,d.size-5)})))}>Smaller −</button><button className="choice" onClick={() => setDecorations(p => p.map(d => ({...d,size:Math.min(54,d.size+5)})))}>Larger +</button></div>
                     <button className="text-btn" onClick={() => setDecorations([])}><Trash2 size={14}/> Remove all stickers</button>
                   </>}
-                  <div className="tool-tip"><Sparkles size={14}/> Your decorations and captions are included in the downloaded PNG.</div>
+                  <div className="tool-tip"><Sparkles size={14}/> Your decorations and captions are included in the downloaded image.</div>
                 </div>
               </div>
-              <div className="editor-footer"><span>{shots.length === count ? <><Check size={14}/> Your strip is ready to download</> : <><ImagePlus size={14}/> {count - shots.length} more photo{count - shots.length === 1 ? '' : 's'} to complete your strip</>}</span><button className="download-btn" onClick={download}><Download size={16}/> Download PNG</button></div>
+              <div className="editor-footer">
+                <span>{shots.length === count ? <><Check size={14}/> Your strip is ready to download</> : <><ImagePlus size={14}/> {count - shots.length} more photo{count - shots.length === 1 ? '' : 's'} to complete your strip</>}</span>
+                <div className="export-actions">
+                  <label className="sr-only" htmlFor="export-format">Download format</label>
+                  <select id="export-format" value={exportFormat} onChange={e => setExportFormat(e.target.value === 'jpeg' ? 'jpeg' : 'png')}>
+                    <option value="png">PNG</option><option value="jpeg">JPEG</option>
+                  </select>
+                  <button className="download-btn" onClick={download}><Download size={16}/> Download {exportFormat.toUpperCase()}</button>
+                </div>
+              </div>
+              {(videoRecording || videoUrl) && <div className="video-export">
+                <span>{videoRecording ? <><i/> Video recording in progress</> : <><Film size={14}/> Your photo session video is ready</>}</span>
+                {videoUrl && <a className="video-download" href={videoUrl} download={`cozy-booth-photo-session.${videoExtension}`}><Download size={14}/> Download video</a>}
+              </div>}
               {notice && <div className="success-note">{notice}</div>}
             </section>
           </div>

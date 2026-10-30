@@ -29,10 +29,12 @@ npm run preview
 - 2, 3, 4, or 6-photo strip
 - 3, 5, or 10-second countdown
 - Retake and undo last photo
-- Background and frame choices
+- Six selectable strip design previews: Cozy Classic, Blush Bloom, Sage Garden, Lavender Dream, Vintage Film, and Clean Minimal
+- Classic, vintage, and minimal frame styles with customizable background colors
 - Natural, warm, pastel, black & white, retro, and glow filters
 - Caption, title, draggable emoji decorations
-- PNG export with decorations and caption rendered into the image
+- PNG or JPEG export with decorations and caption rendered into the image
+- Automatic local video recording from the first countdown until the photo strip is complete, with a video download
 - Responsive desktop and mobile layout
 
 ## Privacy
