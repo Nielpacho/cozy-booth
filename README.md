@@ -26,15 +26,17 @@ npm run preview
 ## Features
 
 - Browser camera access with front/rear camera preference where supported
-- 2, 3, 4, or 6-photo strip
+- 2, 3, or 4-photo strip
 - 3, 5, or 10-second countdown
 - Retake and undo last photo
-- Six selectable strip design previews: Cozy Classic, Blush Bloom, Sage Garden, Lavender Dream, Vintage Film, and Clean Minimal
-- Classic, vintage, and minimal frame styles with customizable background colors
+- Twelve selectable, locally defined strip templates with distinct colors, frames, typography, captions, filters, and decorations
+- Vertical photobooth and two-column collage layouts for 2, 3, or 4 photos
+- Customizable background, frame style, strip padding, photo spacing, title, caption, and draggable/resizable/rotatable stickers
+- Reset any template to its original design without retaking photos
 - Natural, warm, pastel, black & white, retro, and glow filters
 - Caption, title, draggable emoji decorations
 - PNG or JPEG export with decorations and caption rendered into the image
-- Automatic local video recording from the first countdown until the photo strip is complete, with a video download
+- Automatic local video recording from the first countdown until the photo strip is complete, with video download and iOS share-sheet support for saving to Photos
 - Responsive desktop and mobile layout
 
 ## Privacy
