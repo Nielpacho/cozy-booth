@@ -59,11 +59,8 @@ export default function App() {
         video: { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 960 } },
         audio: false,
       })
+      // Keep the stream until the video element is mounted and ready.
       streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-      }
       setCameraOn(true)
       setStarted(true)
     } catch (error) {
@@ -75,6 +72,25 @@ export default function App() {
           : 'We could not start your camera. Check that no other app is using it.')
     }
   }, [facing, stopCamera])
+
+  // Attach the camera stream after React has rendered the video element.
+  useEffect(() => {
+    const video = videoRef.current
+    const stream = streamRef.current
+
+    if (!cameraOn || !video || !stream) return
+
+    video.srcObject = stream
+    video.play().catch(error => {
+      console.error('Camera playback error:', error)
+      setCameraError('Camera connected, but the preview could not start. Please reload and try again.')
+    })
+
+    return () => {
+      video.pause()
+      video.srcObject = null
+    }
+  }, [cameraOn])
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach(track => track.stop())
@@ -261,9 +277,15 @@ export default function App() {
             <section className="panel camera-panel">
               <div className="panel-heading"><div><span className="step">01</span><h3>Camera studio</h3></div><span className={`status ${cameraOn ? 'online' : ''}`}><i/> {cameraOn ? 'camera ready' : 'not connected'}</span></div>
               <div className="camera-window">
-                {cameraOn
-                  ? <video ref={videoRef} autoPlay playsInline muted className={`camera-video ${facing === 'user' ? 'mirrored' : ''}`} />
-                  : <div className="camera-placeholder"><div className="camera-icon"><CameraOff size={30}/></div><strong>Your camera goes here</strong><span>Allow camera access when you're ready ♡</span></div>}
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`camera-video ${facing === 'user' ? 'mirrored' : ''}`}
+                  style={{ display: cameraOn ? 'block' : 'none' }}
+                />
+                {!cameraOn && <div className="camera-placeholder"><div className="camera-icon"><CameraOff size={30}/></div><strong>Your camera goes here</strong><span>Allow camera access when you're ready ♡</span></div>}
                 {countdown !== null && <div className="countdown-overlay"><span>{countdown === 0 ? '✦' : countdown}</span><small>get ready!</small></div>}
                 <span className="camera-corner">LIVE PREVIEW</span>
               </div>
