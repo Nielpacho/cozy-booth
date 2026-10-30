@@ -35,7 +35,7 @@ npm run preview
 - Customizable background, frame style, strip padding, photo spacing, title, caption, and individually movable/resizable/rotatable/deletable stickers
 - Caption font size, text color, alignment, and removable preset captions
 - Reset any template to its original design without retaking photos
-- Natural, warm, pastel, black & white, retro, and glow filters
+- 40 photo filters, including Vintage, Pastel, Cinematic, Korean Aesthetic, Japanese Film, Y2K, Polaroid, and more; applied to strip previews and exports
 - Caption, title, draggable emoji decorations
 - PNG or JPEG export with decorations and caption rendered into the image
 - Automatic local video recording from the first countdown until the photo strip is complete, with video download and iOS share-sheet support for saving to Photos

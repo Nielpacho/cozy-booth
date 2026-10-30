@@ -4,16 +4,52 @@ import { getStripDesign, stripDesigns, type DesignCategory, type FrameStyle, typ
 
 type Shot = { id: number; url: string }
 type Decor = { id: number; emoji: string; x: number; y: number; size: number; rotation: number }
-type Filter = 'natural' | 'warm' | 'pastel' | 'mono' | 'retro' | 'glow'
+const photoFilters = [
+  { id: 'vintage', name: 'Vintage Filter', css: 'sepia(.38) saturate(.82) contrast(1.05)' },
+  { id: 'pastel', name: 'Pastel Filter', css: 'brightness(1.08) saturate(.78) contrast(.92)' },
+  { id: 'cinematic', name: 'Cinematic Filter', css: 'contrast(1.18) saturate(.82) brightness(.94)' },
+  { id: 'dark-moody', name: 'Dark Moody', css: 'brightness(.78) contrast(1.22) saturate(.82)' },
+  { id: 'golden-hour', name: 'Golden Hour', css: 'sepia(.24) saturate(1.35) brightness(1.06)' },
+  { id: 'clean-natural', name: 'Clean Natural', css: 'brightness(1.03) saturate(1.04) contrast(1.02)' },
+  { id: 'black-white', name: 'Black and White', css: 'grayscale(1) contrast(1.08)' },
+  { id: 'dreamy-glow', name: 'Dreamy Glow', css: 'brightness(1.12) saturate(.88) contrast(.94)' },
+  { id: 'korean-aesthetic', name: 'Korean Aesthetic', css: 'brightness(1.1) saturate(.72) contrast(.94) sepia(.06)' },
+  { id: 'japanese-film', name: 'Japanese Film', css: 'sepia(.2) saturate(.78) contrast(.96) brightness(1.03)' },
+  { id: 'retro-90s', name: 'Retro 90s', css: 'sepia(.2) saturate(1.22) contrast(1.08) hue-rotate(-8deg)' },
+  { id: 'polaroid', name: 'Polaroid Effect', css: 'sepia(.16) saturate(.86) brightness(1.08) contrast(.96)' },
+  { id: 'y2k', name: 'Y2K Filter', css: 'saturate(1.35) contrast(1.08) brightness(1.04) hue-rotate(7deg)' },
+  { id: 'disposable-camera', name: 'Disposable Camera', css: 'contrast(1.18) saturate(1.2) brightness(1.04) sepia(.1)' },
+  { id: 'soft-blur', name: 'Soft Blur', css: 'blur(.5px) brightness(1.04) saturate(.94)' },
+  { id: 'hd-sharp', name: 'HD Sharp', css: 'contrast(1.18) saturate(1.08) brightness(1.01)' },
+  { id: 'cool-tone', name: 'Cool Tone', css: 'hue-rotate(8deg) saturate(.92) brightness(1.02)' },
+  { id: 'warm-tone', name: 'Warm Tone', css: 'sepia(.16) saturate(1.14) brightness(1.04)' },
+  { id: 'faded-film', name: 'Faded Film', css: 'contrast(.82) saturate(.72) brightness(1.12) sepia(.12)' },
+  { id: 'grainy-film', name: 'Grainy Film', css: 'sepia(.18) saturate(.86) contrast(1.08)' },
+  { id: 'angelic-glow', name: 'Angelic Glow', css: 'brightness(1.16) saturate(.82) contrast(.9)' },
+  { id: 'matte', name: 'Matte Filter', css: 'contrast(.84) saturate(.88) brightness(1.08)' },
+  { id: 'sunset-orange', name: 'Sunset Orange', css: 'sepia(.28) saturate(1.45) hue-rotate(-8deg) brightness(1.02)' },
+  { id: 'blue-hour', name: 'Blue Hour', css: 'hue-rotate(18deg) saturate(.82) brightness(.92) contrast(1.08)' },
+  { id: 'soft-focus', name: 'Soft Focus', css: 'blur(.25px) brightness(1.08) contrast(.9) saturate(.9)' },
+  { id: 'film-camera', name: 'Film Camera', css: 'sepia(.22) saturate(.92) contrast(1.12) brightness(.98)' },
+  { id: 'flash-photography', name: 'Flash Photography', css: 'brightness(1.16) contrast(1.16) saturate(1.08)' },
+  { id: 'moody-aesthetic', name: 'Moody Aesthetic', css: 'brightness(.86) contrast(1.16) saturate(.76)' },
+  { id: 'soft-vintage', name: 'Soft Vintage', css: 'sepia(.22) saturate(.78) brightness(1.08) contrast(.9)' },
+  { id: 'natural-beauty', name: 'Natural Beauty', css: 'brightness(1.04) saturate(.96) contrast(.98)' },
+  { id: 'latte', name: 'Latte Filter', css: 'sepia(.26) saturate(.82) brightness(1.04)' },
+  { id: 'creamy-beige', name: 'Creamy Beige', css: 'sepia(.18) saturate(.68) brightness(1.1) contrast(.92)' },
+  { id: 'milky-white', name: 'Milky White', css: 'brightness(1.17) saturate(.72) contrast(.88)' },
+  { id: 'lavender-tone', name: 'Lavender Tone', css: 'hue-rotate(22deg) saturate(.82) brightness(1.04)' },
+  { id: 'cloudy-effect', name: 'Cloudy Effect', css: 'brightness(1.06) saturate(.72) contrast(.86)' },
+  { id: 'retro-brown', name: 'Retro Brown', css: 'sepia(.42) saturate(.72) contrast(1.05)' },
+  { id: 'aesthetic-glow', name: 'Aesthetic Glow', css: 'brightness(1.1) saturate(.96) contrast(.94)' },
+  { id: 'dreamy-pink', name: 'Dreamy Pink', css: 'hue-rotate(-12deg) saturate(.88) brightness(1.08)' },
+  { id: 'midnight-blue', name: 'Midnight Blue', css: 'hue-rotate(24deg) saturate(.84) brightness(.76) contrast(1.12)' },
+  { id: 'warm-film', name: 'Warm Film', css: 'sepia(.2) saturate(1.12) contrast(1.04) brightness(1.02)' },
+] as const
+type Filter = typeof photoFilters[number]['id']
 type ExportFormat = 'png' | 'jpeg'
-const filterCss: Record<Filter, string> = {
-  natural: 'none',
-  warm: 'sepia(.22) saturate(1.2) contrast(1.02)',
-  pastel: 'brightness(1.08) saturate(.78) contrast(.92)',
-  mono: 'grayscale(1) contrast(1.08)',
-  retro: 'sepia(.35) saturate(.8) contrast(1.12)',
-  glow: 'brightness(1.12) saturate(.88)',
-}
+const filtersPerPage = 4
+const filterCss = Object.fromEntries(photoFilters.map(({ id, css }) => [id, css])) as Record<Filter, string>
 const cozyStickers = ['💗', '✨', '🎀', '🌷', '☁️', '⭐', '🧸', '♡', '🌼', '🦋', '🤎', '☺️', '💐', '🌸', '🌹', '🍓', '🍒', '🍰', '🫧', '💌', '🐻', '🐰', '🌈', '☀️', '🌙', '💖', '💕', '🪻', '🍡', '🧁', '🪷', '🪻']
 const halloweenStickers = ['👻', '🎃', '🦇', '🐈‍⬛', '🧙', '🌙', '⭐', '🍬', '🍭', '🎀', '🖤', '✨', '🕸️', '🕷️', '🧛', '🧟', '🧹', '🪄', '🧪', '💀', '🦴', '🕯️', '🌑', '🧡', '🍂', '🍁', '🦉', '🐈', '🪦', '🥀', '🦇', '👁️']
 const christmasStickers = ['🎄', '❄️', '🎅', '🍬', '🍪', '🔔', '🔴', '🎁', '⭐', '🎀', '✨', '🦌', '⛄', '☃️', '🧦', '🛷', '🕯️', '🌟', '🪽', '🧤', '🧣', '🍭', '🍫', '🥛', '🌲', '🛎️', '💝', '❤️', '🤍', '🧑‍🎄', '🦌', '🪅']
@@ -57,6 +93,7 @@ export default function App() {
   const [countdown, setCountdown] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState<Filter>('pastel')
+  const [filterPage, setFilterPage] = useState(0)
   const [bg, setBg] = useState('#f9e4e8')
   const [frameStyle, setFrameStyle] = useState<FrameStyle>('rounded')
   const [selectedDesign, setSelectedDesign] = useState('coquette-pink')
@@ -292,7 +329,9 @@ export default function App() {
     setPhotoSpacing(design.spacing)
     setCaption(design.caption)
     setTitle(design.name)
-    setFilter(design.filter)
+    const designFilter = ({ natural: 'clean-natural', warm: 'warm-tone', pastel: 'pastel', mono: 'black-white', retro: 'vintage', glow: 'dreamy-glow' } as const)[design.filter]
+    setFilter(designFilter)
+    setFilterPage(Math.floor(photoFilters.findIndex(item => item.id === designFilter) / filtersPerPage))
     setCaptionColor(design.accent)
     setCaptionFontSize(16)
     setCaptionFontStyle(design.fontStyle === 'normal' ? 'normal' : 'italic')
@@ -696,7 +735,12 @@ export default function App() {
                     <div className="swatches">{['#f7efe5','#f5dfe0','#ead9c8','#e6e8dc','#e6e1ed','#ffffff','#d9c3aa', '#dcecf4', '#292929'].map(c => <button key={c} aria-label={`Background ${c}`} className={`swatch ${bg === c ? 'picked' : ''}`} style={{ background: c }} onClick={() => setBg(c)}/>)}</div>
                     <label className="custom-color-label">Custom color<input aria-label="Custom strip background color" type="color" value={bg} onChange={e => setBg(e.target.value)}/></label>
                     <label className="tool-label">PHOTO FILTER</label>
-                    <div className="filter-grid">{(['natural','warm','pastel','mono','retro','glow'] as Filter[]).map(f => <button key={f} className={filter === f ? 'filter selected' : 'filter'} onClick={() => setFilter(f)}>{f === 'mono' ? 'B&W' : f}</button>)}</div>
+                    <div className="filter-grid">{photoFilters.slice(filterPage * filtersPerPage, (filterPage + 1) * filtersPerPage).map(({ id, name }) => <button key={id} type="button" aria-pressed={filter === id} className={filter === id ? 'filter selected' : 'filter'} onClick={() => setFilter(id)}>{name}</button>)}</div>
+                    <div className="filter-pagination">
+                      <button type="button" aria-label="Previous photo filters" disabled={filterPage === 0} onClick={() => setFilterPage(page => Math.max(0, page - 1))}><ChevronLeft size={14}/> Previous</button>
+                      <span>{filterPage + 1} / {Math.ceil(photoFilters.length / filtersPerPage)}</span>
+                      <button type="button" aria-label="Next photo filters" disabled={(filterPage + 1) * filtersPerPage >= photoFilters.length} onClick={() => setFilterPage(page => Math.min(Math.ceil(photoFilters.length / filtersPerPage) - 1, page + 1))}>Next <ChevronRight size={14}/></button>
+                    </div>
                     <label className="tool-label">TITLE & CAPTION</label>
                     <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Strip title" maxLength={24}/>
                     <input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Add a little message or emoji" maxLength={64}/>
