@@ -617,7 +617,7 @@ export default function App() {
               </div>
               {cameraError && <div className="error-box">{cameraError}</div>}
               <div className="camera-settings">
-                <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { const nextCount = Number(e.target.value); setCount(nextCount); setShots(current => current.slice(0, nextCount)) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option><option value={6}>6 photos</option></select></label>
+                <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { const nextCount = Number(e.target.value); setCount(nextCount); setShots(current => current.slice(0, nextCount)) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option></select></label>
                 <label>COUNTDOWN<select value={seconds} disabled={busy} onChange={e => setSeconds(Number(e.target.value))}><option value={3}>3 seconds</option><option value={5}>5 seconds</option><option value={10}>10 seconds</option></select></label>
               </div>
               <div className="capture-progress"><div className="progress-label"><span>PHOTO PROGRESS</span><strong>{shots.length} / {count}</strong></div><div className="progress-track"><div style={{ width: `${shots.length / count * 100}%` }}/></div></div>
