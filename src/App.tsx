@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Camera, CameraOff, ChevronLeft, ChevronRight, Download, Film, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Trash2, Undo2, SwitchCamera, Check } from 'lucide-react'
-import { getStripDesign, stripDesigns, type FrameStyle, type StripLayout } from './stripDesigns'
+import { getStripDesign, stripDesigns, type DesignCategory, type FrameStyle, type StripLayout } from './stripDesigns'
 
 type Shot = { id: number; url: string }
 type Decor = { id: number; emoji: string; x: number; y: number; size: number; rotation: number }
@@ -14,7 +14,9 @@ const filterCss: Record<Filter, string> = {
   retro: 'sepia(.35) saturate(.8) contrast(1.12)',
   glow: 'brightness(1.12) saturate(.88)',
 }
-const emojis = ['💗', '✨', '🎀', '🌷', '☁️', '⭐', '🧸', '♡', '🌼', '🦋', '🤎', '☺️']
+const cozyStickers = ['💗', '✨', '🎀', '🌷', '☁️', '⭐', '🧸', '♡', '🌼', '🦋', '🤎', '☺️', '💐', '🌸', '🌹', '🍓', '🍒', '🍰', '🫧', '💌', '🐻', '🐰', '🌈', '☀️', '🌙', '💖', '💕', '🪻', '🍡', '🧁', '🪷', '🪻']
+const halloweenStickers = ['👻', '🎃', '🦇', '🐈‍⬛', '🧙', '🌙', '⭐', '🍬', '🍭', '🎀', '🖤', '✨', '🕸️', '🕷️', '🧛', '🧟', '🧹', '🪄', '🧪', '💀', '🦴', '🕯️', '🌑', '🧡', '🍂', '🍁', '🦉', '🐈', '🪦', '🥀', '🦇', '👁️']
+const christmasStickers = ['🎄', '❄️', '🎅', '🍬', '🍪', '🔔', '🔴', '🎁', '⭐', '🎀', '✨', '🦌', '⛄', '☃️', '🧦', '🛷', '🕯️', '🌟', '🪽', '🧤', '🧣', '🍭', '🍫', '🥛', '🌲', '🛎️', '💝', '❤️', '🤍', '🧑‍🎄', '🦌', '🪅']
 
 const isAppleMobile = () => {
   if (typeof navigator === 'undefined') return false
@@ -58,14 +60,22 @@ export default function App() {
   const [bg, setBg] = useState('#f9e4e8')
   const [frameStyle, setFrameStyle] = useState<FrameStyle>('rounded')
   const [selectedDesign, setSelectedDesign] = useState('coquette-pink')
+  const [designCategory, setDesignCategory] = useState<'all' | DesignCategory>('all')
   const [designPage, setDesignPage] = useState(0)
   const [caption, setCaption] = useState('made with love ♡')
   const [title, setTitle] = useState('Coquette Pink')
   const [layout, setLayout] = useState<StripLayout>('vertical')
   const [stripPadding, setStripPadding] = useState(34)
   const [photoSpacing, setPhotoSpacing] = useState(15)
+  const [captionColor, setCaptionColor] = useState('#b85f79')
+  const [captionFontSize, setCaptionFontSize] = useState(16)
+  const [captionFontStyle, setCaptionFontStyle] = useState<'normal' | 'italic' | 'bold'>('italic')
+  const [captionAlignment, setCaptionAlignment] = useState<CanvasTextAlign>('center')
+  const [captionOffset, setCaptionOffset] = useState(0)
   const [decorations, setDecorations] = useState<Decor[]>([])
+  const [selectedDecorationId, setSelectedDecorationId] = useState<number | null>(null)
   const [selectedEmoji, setSelectedEmoji] = useState('💗')
+  const [stickerCategory, setStickerCategory] = useState<DesignCategory>('cozy')
   const [dragging, setDragging] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'design' | 'stickers'>('design')
   const [notice, setNotice] = useState('')
@@ -246,14 +256,24 @@ export default function App() {
   }
 
   const captureRemaining = shots.length < count
-  const addDecoration = (emoji: string) => setDecorations(prev => [...prev, {
-    id: Date.now() + Math.random(), emoji, x: 86, y: 94, size: 30, rotation: Math.round(Math.random() * 24 - 12),
-  }])
+  const addDecoration = (emoji: string) => {
+    const id = Date.now() + Math.random()
+    setDecorations(prev => [...prev, { id, emoji, x: 86, y: 94, size: 30, rotation: 0 }])
+    setSelectedDecorationId(id)
+  }
 
   const currentDesign = getStripDesign(selectedDesign)
   const designsPerPage = 4
-  const designPageCount = Math.ceil(stripDesigns.length / designsPerPage)
-  const visibleDesigns = stripDesigns.slice(designPage * designsPerPage, (designPage + 1) * designsPerPage)
+  const filteredDesigns = designCategory === 'all' ? stripDesigns : stripDesigns.filter(design => design.category === designCategory)
+  const designPageCount = Math.ceil(filteredDesigns.length / designsPerPage)
+  const visibleDesigns = filteredDesigns.slice(designPage * designsPerPage, (designPage + 1) * designsPerPage)
+  const stickerLibraries: Record<DesignCategory, string[]> = {
+    cozy: cozyStickers,
+    halloween: halloweenStickers,
+    christmas: christmasStickers,
+  }
+  const availableStickers = [...new Set(stickerLibraries[stickerCategory])]
+
   const stripDimensions = useMemo(() => {
     const rows = layout === 'vertical' ? count : Math.ceil(count / 2)
     const gridHeight = layout === 'vertical' ? count * 420 : rows * 190
@@ -263,7 +283,9 @@ export default function App() {
   const chooseDesign = (designId: string) => {
     const design = getStripDesign(designId)
     setSelectedDesign(design.id)
-    setDesignPage(Math.floor(stripDesigns.findIndex(item => item.id === design.id) / designsPerPage))
+    setDesignCategory(design.category)
+    const categoryDesigns = stripDesigns.filter(item => item.category === design.category)
+    setDesignPage(Math.floor(categoryDesigns.findIndex(item => item.id === design.id) / designsPerPage))
     setBg(design.background)
     setFrameStyle(design.frameStyle)
     setStripPadding(design.padding)
@@ -271,11 +293,17 @@ export default function App() {
     setCaption(design.caption)
     setTitle(design.name)
     setFilter(design.filter)
+    setCaptionColor(design.accent)
+    setCaptionFontSize(16)
+    setCaptionFontStyle(design.fontStyle === 'normal' ? 'normal' : 'italic')
+    setCaptionAlignment('center')
+    setCaptionOffset(0)
   }
 
   const resetDesign = () => {
     chooseDesign(selectedDesign)
     setDecorations([])
+    setSelectedDecorationId(null)
   }
 
   const drawStrip = useCallback(async () => {
@@ -330,7 +358,7 @@ export default function App() {
 
       ctx.save()
       roundedRectPath(ctx, frameX, frameY, frameW, frameH, radius + borderWidth)
-      ctx.fillStyle = currentDesign.frameColor
+      ctx.fillStyle = currentDesign.borderColors?.[i % currentDesign.borderColors.length] ?? currentDesign.frameColor
       ctx.fill()
       if (frameStyle === 'botanical') {
         ctx.strokeStyle = currentDesign.accent
@@ -389,17 +417,21 @@ export default function App() {
       ctx.restore()
     }
 
-    ctx.fillStyle = currentDesign.accent
-    ctx.textAlign = 'center'
+    ctx.fillStyle = captionColor
+    ctx.textAlign = captionAlignment
     ctx.textBaseline = 'middle'
-    ctx.font = `${currentDesign.fontStyle} 600 19px ${currentDesign.fontFamily}`
-    if (title.trim()) ctx.fillText(title.trim().slice(0, 32), W / 2, H - 74, W - pad * 2)
+    const textX = captionAlignment === 'left' ? pad : captionAlignment === 'right' ? W - pad : W / 2
+    const fontStyle = captionFontStyle === 'italic' ? 'italic ' : ''
+    const fontWeight = captionFontStyle === 'bold' ? '700' : '600'
+    ctx.font = `${fontStyle}${fontWeight} 19px ${currentDesign.fontFamily}`
+    if (title.trim()) ctx.fillText(title.trim().slice(0, 32), textX, H - 74, W - pad * 2)
     if (caption.trim()) {
-      ctx.font = `${currentDesign.fontStyle} 16px ${currentDesign.fontFamily}`
-      ctx.fillText(caption.trim().slice(0, 48), W / 2, H - 45, W - pad * 2)
+      ctx.font = `${fontStyle}${fontWeight} ${captionFontSize}px ${currentDesign.fontFamily}`
+      ctx.fillText(caption.trim().slice(0, 64), textX, H - 45 + captionOffset, W - pad * 2)
     }
     if (['vintage-film', 'film-diary', 'mono'].includes(currentDesign.id)) {
       ctx.font = '12px "DM Sans", sans-serif'
+      ctx.textAlign = 'center'
       ctx.fillText(new Date().toLocaleDateString(), W / 2, H - 18)
     }
 
@@ -412,7 +444,7 @@ export default function App() {
       for (let row = 0; row < rows; row++) {
         const centerY = pad + row * (photoH + gap) + photoH / 2
         ctx.fillText(currentDesign.decorations[row % currentDesign.decorations.length] ?? '✦', pad / 2, centerY)
-        if (columns === 1) ctx.fillText(currentDesign.decorations[(row + 1) % currentDesign.decorations.length] ?? '✦', W - pad / 2, centerY)
+        ctx.fillText(currentDesign.decorations[(row + 1) % currentDesign.decorations.length] ?? '✦', W - pad / 2, centerY)
       }
       if (currentDesign.texture === 'sparkle') {
         ctx.font = '15px serif'
@@ -442,7 +474,7 @@ export default function App() {
       previewCanvas.getContext('2d')?.drawImage(canvas, 0, 0)
     }
     return canvas
-  }, [bg, caption, count, currentDesign, decorations, filter, frameStyle, layout, photoSpacing, shots, stripDimensions, stripPadding, title])
+  }, [bg, caption, captionAlignment, captionColor, captionFontSize, captionFontStyle, captionOffset, count, currentDesign, decorations, filter, frameStyle, layout, photoSpacing, shots, stripDimensions, stripPadding, title])
 
   useEffect(() => { void drawStrip() }, [drawStrip])
 
@@ -509,12 +541,14 @@ export default function App() {
     clearVideo()
     setShots([])
     setDecorations([])
+    setSelectedDecorationId(null)
     setNotice('')
     setCountdown(null)
   }
 
   const pointerDown = (e: React.PointerEvent, id: number) => {
     setDragging(id)
+    setSelectedDecorationId(id)
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   }
   const pointerMove = (e: React.PointerEvent) => {
@@ -583,7 +617,7 @@ export default function App() {
               </div>
               {cameraError && <div className="error-box">{cameraError}</div>}
               <div className="camera-settings">
-                <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { const nextCount = Number(e.target.value); setCount(nextCount); setShots(current => current.slice(0, nextCount)) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option></select></label>
+                <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { const nextCount = Number(e.target.value); setCount(nextCount); setShots(current => current.slice(0, nextCount)) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option><option value={6}>6 photos</option></select></label>
                 <label>COUNTDOWN<select value={seconds} disabled={busy} onChange={e => setSeconds(Number(e.target.value))}><option value={3}>3 seconds</option><option value={5}>5 seconds</option><option value={10}>10 seconds</option></select></label>
               </div>
               <div className="capture-progress"><div className="progress-label"><span>PHOTO PROGRESS</span><strong>{shots.length} / {count}</strong></div><div className="progress-track"><div style={{ width: `${shots.length / count * 100}%` }}/></div></div>
@@ -603,12 +637,18 @@ export default function App() {
               <div className="panel-heading"><div><span className="step">02</span><h3>Your photo strip</h3></div><span className="live-label"><span/> LIVE PREVIEW</span></div>
               <div className="design-gallery">
                 <div className="design-gallery-heading">
-                  <div><label className="tool-label">CHOOSE YOUR STRIP DESIGN</label><span>12 ready-made looks — switch any time without retaking photos.</span></div>
+                  <div><label className="tool-label">CHOOSE YOUR STRIP DESIGN</label><span>Pick a collection, then switch designs without retaking photos.</span></div>
                   <div className="design-gallery-navigation">
-                    <span>{designPage * designsPerPage + 1}–{Math.min((designPage + 1) * designsPerPage, stripDesigns.length)} of {stripDesigns.length}</span>
+                    <span>{filteredDesigns.length ? designPage * designsPerPage + 1 : 0}–{Math.min((designPage + 1) * designsPerPage, filteredDesigns.length)} of {filteredDesigns.length}</span>
                     <button type="button" aria-label="Previous strip designs" disabled={designPage === 0} onClick={() => setDesignPage(page => Math.max(0, page - 1))}><ChevronLeft size={16}/></button>
                     <button type="button" aria-label="Next strip designs" disabled={designPage >= designPageCount - 1} onClick={() => setDesignPage(page => Math.min(designPageCount - 1, page + 1))}><ChevronRight size={16}/></button>
                   </div>
+                </div>
+                <div className="design-category-tabs" aria-label="Template collections">
+                  <button type="button" className={designCategory === 'all' ? 'active' : ''} onClick={() => { setDesignCategory('all'); setDesignPage(0) }}>All designs</button>
+                  <button type="button" className={designCategory === 'cozy' ? 'active' : ''} onClick={() => { setDesignCategory('cozy'); setDesignPage(0) }}>Cozy ✨</button>
+                  <button type="button" className={designCategory === 'halloween' ? 'active' : ''} onClick={() => { setDesignCategory('halloween'); setDesignPage(0) }}>Halloween 🎃</button>
+                  <button type="button" className={designCategory === 'christmas' ? 'active' : ''} onClick={() => { setDesignCategory('christmas'); setDesignPage(0) }}>Christmas 🎄</button>
                 </div>
                 <div className="design-gallery-list">
                   {visibleDesigns.map(design => <button
@@ -625,6 +665,7 @@ export default function App() {
                       </span>
                     </span>
                     <span className="design-card-name">{design.name}</span>
+                    <span className="design-card-season">{design.emoji} {design.category === 'halloween' ? 'Halloween' : design.category === 'christmas' ? 'Christmas' : 'Cozy'}</span>
                     <span className="design-card-description">{design.description}</span>
                     <span className="design-card-action">{selectedDesign === design.id ? <><Check size={11}/> Selected</> : 'Use This Design'}</span>
                   </button>)}
@@ -635,7 +676,7 @@ export default function App() {
                 <div className="strip-stage">
                   <div className="strip-wrap" ref={previewRef} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}>
                     <canvas ref={canvasRef} className="strip-canvas" aria-label="Photobooth strip preview"/>
-                    {decorations.map(d => <button key={d.id} className="decoration-handle" style={{ left: `${d.x}%`, top: `${d.y}%`, fontSize: `${d.size}px`, transform: `translate(-50%,-50%) rotate(${d.rotation}deg)` }} onPointerDown={e => pointerDown(e, d.id)} onClick={() => setDecorations(prev => prev.filter(x => x.id !== d.id))} title="Drag to move; click to remove">{d.emoji}</button>)}
+                    {decorations.map(d => <button key={d.id} type="button" className={`decoration-handle ${selectedDecorationId === d.id ? 'selected' : ''}`} aria-label={`Select ${d.emoji} sticker`} aria-pressed={selectedDecorationId === d.id} style={{ left: `${d.x}%`, top: `${d.y}%`, fontSize: `${d.size}px`, transform: `translate(-50%,-50%) rotate(${d.rotation}deg)` }} onPointerDown={e => pointerDown(e, d.id)} onClick={() => setSelectedDecorationId(d.id)} title="Drag to move; select to resize, rotate, or delete">{d.emoji}</button>)}
                   </div>
                   <span className="drag-hint">✧ drag stickers to move · tap to remove</span>
                 </div>
@@ -658,13 +699,39 @@ export default function App() {
                     <div className="filter-grid">{(['natural','warm','pastel','mono','retro','glow'] as Filter[]).map(f => <button key={f} className={filter === f ? 'filter selected' : 'filter'} onClick={() => setFilter(f)}>{f === 'mono' ? 'B&W' : f}</button>)}</div>
                     <label className="tool-label">TITLE & CAPTION</label>
                     <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Strip title" maxLength={24}/>
-                    <input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Add a little message" maxLength={48}/>
+                    <input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Add a little message or emoji" maxLength={64}/>
+                    <label className="custom-color-label">Text color<input aria-label="Caption and title color" type="color" value={captionColor} onChange={e => setCaptionColor(e.target.value)}/></label>
+                    <div className="range-control"><span>Text size</span><input aria-label="Caption font size" type="range" min="11" max="26" value={captionFontSize} onChange={e => setCaptionFontSize(Number(e.target.value))}/><b>{captionFontSize}</b></div>
+                    <label className="tool-label" htmlFor="caption-font-style">FONT STYLE</label>
+                    <select id="caption-font-style" className="design-select" value={captionFontStyle} onChange={e => setCaptionFontStyle(e.target.value === 'italic' || e.target.value === 'bold' ? e.target.value : 'normal')}>
+                      <option value="normal">Regular</option><option value="italic">Handwritten italic</option><option value="bold">Bold</option>
+                    </select>
+                    <label className="tool-label" htmlFor="caption-alignment">TEXT ALIGNMENT</label>
+                    <select id="caption-alignment" className="design-select" value={captionAlignment} onChange={e => setCaptionAlignment(e.target.value === 'left' || e.target.value === 'right' ? e.target.value : 'center')}>
+                      <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+                    </select>
+                    <div className="range-control"><span>Caption position</span><input aria-label="Caption position" type="range" min="-16" max="16" value={captionOffset} onChange={e => setCaptionOffset(Number(e.target.value))}/><b>{captionOffset}</b></div>
                   </> : <>
                     <label className="tool-label">PICK A LITTLE DECORATION</label>
-                    <div className="emoji-grid">{emojis.map(emoji => <button key={emoji} onClick={() => addDecoration(emoji)}>{emoji}</button>)}</div>
+                    <div className="sticker-category-tabs" role="tablist" aria-label="Sticker categories">
+                      {(['cozy', 'halloween', 'christmas'] as const).map(category => (
+                        <button
+                          key={category}
+                          className={`sticker-category-tab${stickerCategory === category ? ' active' : ''}`}
+                          role="tab"
+                          aria-selected={stickerCategory === category}
+                          onClick={() => setStickerCategory(category)}
+                        >
+                          {category === 'cozy' ? 'Cozy' : category === 'halloween' ? 'Halloween 🎃' : 'Christmas 🎄'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="sticker-library-label">{availableStickers.length} {stickerCategory} stickers · choose one to add</div>
+                    <div className="emoji-grid">{availableStickers.map(emoji => <button key={emoji} aria-label={`Add ${emoji} sticker`} onClick={() => addDecoration(emoji)}>{emoji}</button>)}</div>
                     <label className="tool-label">STICKER SIZE</label>
-                    <div className="choice-row"><button className="choice" onClick={() => setDecorations(p => p.map(d => ({...d,size:Math.max(16,d.size-5)})))}>Smaller −</button><button className="choice" onClick={() => setDecorations(p => p.map(d => ({...d,size:Math.min(54,d.size+5)})))}>Larger +</button><button className="choice" onClick={() => setDecorations(p => p.map(d => ({...d,rotation:(d.rotation+15)%360})))}>Rotate ↻</button></div>
-                    <button className="text-btn" onClick={() => setDecorations([])}><Trash2 size={14}/> Remove all stickers</button>
+                    <div className="choice-row"><button className="choice" disabled={selectedDecorationId === null} onClick={() => setDecorations(p => p.map(d => d.id === selectedDecorationId ? {...d,size:Math.max(16,d.size-5)} : d))}>Smaller −</button><button className="choice" disabled={selectedDecorationId === null} onClick={() => setDecorations(p => p.map(d => d.id === selectedDecorationId ? {...d,size:Math.min(54,d.size+5)} : d))}>Larger +</button><button className="choice" disabled={selectedDecorationId === null} onClick={() => setDecorations(p => p.map(d => d.id === selectedDecorationId ? {...d,rotation:(d.rotation+15)%360} : d))}>Rotate ↻</button></div>
+                    <button className="text-btn" disabled={selectedDecorationId === null} onClick={() => { setDecorations(p => p.filter(d => d.id !== selectedDecorationId)); setSelectedDecorationId(null) }}><Trash2 size={14}/> Delete selected sticker</button>
+                    <button className="text-btn" disabled={!decorations.length} onClick={() => { setDecorations([]); setSelectedDecorationId(null) }}><Trash2 size={14}/> Remove all stickers</button>
                   </>}
                   <div className="tool-tip"><Sparkles size={14}/> Your decorations and captions are included in the downloaded image.</div>
                 </div>

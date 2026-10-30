@@ -26,12 +26,14 @@ npm run preview
 ## Features
 
 - Browser camera access with front/rear camera preference where supported
-- 2, 3, or 4-photo strip
+- 2, 3, 4, or 6-photo strip
 - 3, 5, or 10-second countdown
 - Retake and undo last photo
-- Twelve selectable, locally defined strip templates with distinct colors, frames, typography, captions, filters, and decorations
-- Vertical photobooth and two-column collage layouts for 2, 3, or 4 photos
-- Customizable background, frame style, strip padding, photo spacing, title, caption, and draggable/resizable/rotatable stickers
+- 24 built-in strip templates, including six Halloween and six Christmas designs
+- Separate Cozy, Halloween, and Christmas gallery collections and clickable sticker-library tabs with expanded sticker sets
+- Vertical photobooth and two-column collage layouts for 2, 3, 4, or 6 photos
+- Customizable background, frame style, strip padding, photo spacing, title, caption, and individually movable/resizable/rotatable/deletable stickers
+- Caption font size, text color, alignment, and removable preset captions
 - Reset any template to its original design without retaking photos
 - Natural, warm, pastel, black & white, retro, and glow filters
 - Caption, title, draggable emoji decorations
