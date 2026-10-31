@@ -81,6 +81,7 @@ export default function App() {
   const faceLandmarkerLoadingRef = useRef<Promise<FaceLandmarker> | null>(null)
   const advancedFaceEffectsRef = useRef<AdvancedFaceEffectsRenderer | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const recordingStreamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
   const recordingCompletedRef = useRef(false)
@@ -148,11 +149,19 @@ export default function App() {
   }, [])
 
   const startVideoRecording = useCallback(() => {
-    const stream = streamRef.current
-    if (!stream) return
+    const canvas = cameraCanvasRef.current
+    if (!streamRef.current || !canvas) return
     if (recorderRef.current && recorderRef.current.state !== 'inactive') return
     if (typeof MediaRecorder === 'undefined') {
       setCameraError('Video recording is not supported in this browser. You can still take photos.')
+      return
+    }
+    if (typeof canvas.captureStream !== 'function') {
+      setCameraError('Video recording is not supported in this browser. You can still take photos.')
+      return
+    }
+    if (!canvas.width || !canvas.height) {
+      setCameraError('The camera preview is not ready for video recording. Please try again.')
       return
     }
 
@@ -169,7 +178,9 @@ export default function App() {
       recordedChunksRef.current = []
       recordingCompletedRef.current = false
       videoSessionCompleteRef.current = false
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      const recordingStream = canvas.captureStream(30)
+      recordingStreamRef.current = recordingStream
+      const recorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined)
       recorder.ondataavailable = event => {
         if (event.data.size > 0) {
           recordedChunksRef.current.push(event.data)
@@ -180,6 +191,8 @@ export default function App() {
         recordingCompletedRef.current = false
         videoSessionCompleteRef.current = completed
         recorderRef.current = null
+        recordingStreamRef.current?.getTracks().forEach(track => track.stop())
+        recordingStreamRef.current = null
         setVideoRecording(false)
         const chunks = recordedChunksRef.current
         if (completed && chunks.length) {
@@ -206,12 +219,16 @@ export default function App() {
       }
       recorder.onerror = () => {
         recordingCompletedRef.current = false
+        recordingStreamRef.current?.getTracks().forEach(track => track.stop())
+        recordingStreamRef.current = null
         setCameraError('Video recording stopped unexpectedly. Your photos are still available.')
       }
       recorder.start(1000)
       recorderRef.current = recorder
       setVideoRecording(true)
     } catch (error) {
+      recordingStreamRef.current?.getTracks().forEach(track => track.stop())
+      recordingStreamRef.current = null
       console.error('Video recording error:', error)
       setCameraError('Video recording could not start. You can still take photos.')
     }
@@ -322,38 +339,37 @@ export default function App() {
     let lastStatusUpdate = 0
     let faces: NormalizedLandmark[][] = []
     let effectRenderingFailed = false
+    const gpuEffect = ['big-eyes', 'funny-face', 'tiny-face', 'alien', 'robot'].includes(cameraEffect)
 
     setCameraEffectError('')
     if (cameraEffect === 'none') {
       setCameraEffectStatus('Camera frames stay on your device.')
-      return
-    }
+    } else {
+      if (gpuEffect && !advancedFaceEffectsRef.current) {
+        try {
+          advancedFaceEffectsRef.current = new AdvancedFaceEffectsRenderer()
+        } catch (error) {
+          console.error('Advanced face effects could not start; using the built-in renderer instead:', error)
+          setCameraEffectStatus('Advanced GPU effects are unavailable; using the built-in face effect.')
+        }
+      }
 
-    const gpuEffect = ['big-eyes', 'funny-face', 'tiny-face', 'alien', 'robot'].includes(cameraEffect)
-    if (gpuEffect && !advancedFaceEffectsRef.current) {
-      try {
-        advancedFaceEffectsRef.current = new AdvancedFaceEffectsRenderer()
-      } catch (error) {
-        console.error('Advanced face effects could not start; using the built-in renderer instead:', error)
-        setCameraEffectStatus('Advanced GPU effects are unavailable; using the built-in face effect.')
-      }
+      setCameraEffectStatus('Loading face tracking…')
+      void loadFaceLandmarker().then(landmarker => {
+        if (active) {
+          detector = landmarker
+          setCameraEffectStatus(gpuEffect && !advancedFaceEffectsRef.current
+            ? 'Face tracking ready · using the built-in face effect'
+            : 'Face tracking ready · processed on your device')
+        }
+      }).catch(error => {
+        console.error('Face tracking could not start:', error)
+        if (active) {
+          setCameraEffectError('Face tracking could not load. Check your internet connection, then try selecting the effect again.')
+          setCameraEffectStatus('Live camera is still available without face tracking.')
+        }
+      })
     }
-
-    setCameraEffectStatus('Loading face tracking…')
-    void loadFaceLandmarker().then(landmarker => {
-      if (active) {
-        detector = landmarker
-        setCameraEffectStatus(gpuEffect && !advancedFaceEffectsRef.current
-          ? 'Face tracking ready · using the built-in face effect'
-          : 'Face tracking ready · processed on your device')
-      }
-    }).catch(error => {
-      console.error('Face tracking could not start:', error)
-      if (active) {
-        setCameraEffectError('Face tracking could not load. Check your internet connection, then try selecting the effect again.')
-        setCameraEffectStatus('Live camera is still available without face tracking.')
-      }
-    })
 
     const renderFrame = (now: number) => {
       if (!active) return
@@ -429,6 +445,8 @@ export default function App() {
   useEffect(() => () => {
     recordingCompletedRef.current = false
     if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop()
+    recordingStreamRef.current?.getTracks().forEach(track => track.stop())
+    recordingStreamRef.current = null
     streamRef.current?.getTracks().forEach(track => track.stop())
     faceLandmarkerRef.current?.close()
     faceLandmarkerRef.current = null
