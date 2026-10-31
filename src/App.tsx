@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Camera, CameraOff, ChevronLeft, ChevronRight, Check, Download, Film, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Trash2, Undo2, SwitchCamera, X } from 'lucide-react'
 import { FaceLandmarker, FilesetResolver, type NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { getStripDesign, stripDesigns, type DesignCategory, type FrameStyle, type StripLayout } from './stripDesigns'
-import { cameraEffects, renderCameraFrame, type CameraEffectCategory, type CameraEffectId } from './cameraEffects'
+import { cameraEffects, createFaceSmoother, renderCameraFrame, type CameraEffectCategory, type CameraEffectId } from './cameraEffects'
 import { AdvancedFaceEffectsRenderer } from './advancedFaceEffects'
 
 type Shot = { id: number; url: string }
@@ -335,11 +335,12 @@ export default function App() {
     let active = true
     let animationFrame = 0
     let detector = faceLandmarkerRef.current
-    let lastDetection = 0
+    let lastVideoTime = -1
     let lastStatusUpdate = 0
     let faces: NormalizedLandmark[][] = []
+    const smoother = createFaceSmoother()
     let effectRenderingFailed = false
-    const gpuEffect = ['big-eyes', 'funny-face', 'tiny-face', 'alien', 'robot'].includes(cameraEffect)
+    const gpuEffect = ['big-eyes', 'funny-face', 'tiny-face'].includes(cameraEffect)
 
     setCameraEffectError('')
     if (cameraEffect === 'none') {
@@ -374,16 +375,10 @@ export default function App() {
     const renderFrame = (now: number) => {
       if (!active) return
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth) {
-        if (detector && now - lastDetection >= 67) {
+        if (detector && video.currentTime !== lastVideoTime) {
           try {
-            const detectedFaces = detector.detectForVideo(video, now).faceLandmarks
-            faces = detectedFaces.map((face, faceIndex) => face.map((landmark, landmarkIndex) => {
-              const previous = faces[faceIndex]?.[landmarkIndex]
-              return previous
-                ? { ...landmark, x: previous.x * .35 + landmark.x * .65, y: previous.y * .35 + landmark.y * .65 }
-                : landmark
-            }))
-            lastDetection = now
+            lastVideoTime = video.currentTime
+            faces = smoother.update(detector.detectForVideo(video, now).faceLandmarks, now)
             if (now - lastStatusUpdate > 800) {
               setCameraEffectStatus(faces.length
                 ? `Tracking ${faces.length} face${faces.length === 1 ? '' : 's'} · processed on your device`

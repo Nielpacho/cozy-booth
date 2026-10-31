@@ -54,6 +54,10 @@ export const cameraEffects: { id: CameraEffectId; name: string; category: Camera
 type Point = { x: number; y: number }
 type Face = readonly NormalizedLandmark[]
 
+// Canvas shadow / glow sizes are in screen pixels and ignore ctx.scale(). drawFaceEffect keeps
+// this equal to the current face width so glows scale with the face.
+let glowScale = 1
+
 const pointAt = (face: Face, index: number, width: number, height: number): Point => ({
   x: (face[index]?.x ?? 0) * width,
   y: (face[index]?.y ?? 0) * height,
@@ -61,11 +65,22 @@ const pointAt = (face: Face, index: number, width: number, height: number): Poin
 
 const midpoint = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
 
-const withAnchorScale = (ctx: CanvasRenderingContext2D, anchor: Point, scale: number, draw: () => void) => {
+const withAnchorScale = (ctx: CanvasRenderingContext2D, anchor: Point & { scaleX?: number; tilt?: number }, scale: number, draw: () => void) => {
   ctx.save()
   ctx.translate(anchor.x, anchor.y)
-  ctx.scale(scale, scale)
+  ctx.rotate(anchor.tilt ?? 0)
+  ctx.scale((anchor.scaleX ?? 1) * scale, scale)
   ctx.translate(-anchor.x, -anchor.y)
+  draw()
+  ctx.restore()
+}
+
+// Moves the origin to an ear's mount point and applies the head-turn squash + outward lean.
+const withEarFrame = (ctx: CanvasRenderingContext2D, ear: Point & { scale: number; scaleX: number; tilt: number }, tiltFactor: number, draw: () => void) => {
+  ctx.save()
+  ctx.translate(ear.x, ear.y)
+  ctx.rotate(ear.tilt * tiltFactor)
+  ctx.scale(ear.scaleX * ear.scale, ear.scale)
   draw()
   ctx.restore()
 }
@@ -99,7 +114,7 @@ const drawStar = (ctx: CanvasRenderingContext2D, x: number, y: number, size: num
   ctx.translate(x, y)
   ctx.rotate(rotation)
   ctx.shadowColor = color
-  ctx.shadowBlur = size * .45
+  ctx.shadowBlur = (size * .45) * glowScale
   ctx.beginPath()
   for (let i = 0; i < 8; i++) {
     const radius = i % 2 === 0 ? size : size * .2
@@ -158,118 +173,346 @@ const drawBow = (ctx: CanvasRenderingContext2D, x: number, y: number, size: numb
   ctx.restore()
 }
 
-const drawHalo = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, now: number) => {
+const TAU = Math.PI * 2
+
+const drawHalo = (ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, rotation: number, now: number) => {
   ctx.save()
   ctx.shadowColor = '#ffe29a'
-  ctx.shadowBlur = .09
+  ctx.shadowBlur = .05 * glowScale
   ctx.beginPath()
-  ctx.ellipse(x, y, width, .045, -.06, 0, Math.PI * 2)
+  ctx.ellipse(x, y, rx, ry, rotation, 0, TAU)
   ctx.strokeStyle = '#fff8d8'
-  ctx.lineWidth = .055
+  ctx.lineWidth = .05
   ctx.stroke()
   ctx.shadowBlur = 0
   ctx.beginPath()
-  ctx.ellipse(x, y, width, .045, -.06, 0, Math.PI * 2)
+  ctx.ellipse(x, y, rx, ry, rotation, 0, TAU)
   ctx.strokeStyle = '#e7b94f'
-  ctx.lineWidth = .018
+  ctx.lineWidth = .016
   ctx.stroke()
   for (let i = 0; i < 3; i++) {
     const pulse = .85 + Math.sin(now / 280 + i * 2) * .15
-    drawStar(ctx, x + (i - 1) * width * .62, y - .018, .025 * pulse, '#fff7ce', now / 900 + i)
+    drawStar(ctx, x + (i - 1) * rx * .62, y - ry * .5, .025 * pulse, '#fff7ce', now / 900 + i)
   }
   ctx.restore()
 }
 
-const drawWitchHat = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number) => {
+// Everything a hat needs to sit on the head instead of floating over it. The hat is drawn in a
+// frame whose origin is the point on the forehead where the hat band touches the head.
+type HatFrame = {
+  /** Half the width of the skull. */
+  hr: number
+  /** Minor/major axis ratio of a horizontal circle (brim, band) at the current head pitch. */
+  brimTilt: number
+  /** Vertical foreshortening of the crown at the current head pitch. */
+  crown: number
+  /** Unit vector pointing to real-world "down" in the hat's frame, so floppy parts hang naturally. */
+  gravity: Point
+  /** Pendulum swing (radians) from recent head movement. */
+  swing: number
+  now: number
+  /** Face width in screen pixels, needed because canvas shadow sizes ignore ctx.scale(). */
+  px: number
+  toHat: (point: Point) => Point
+  chin: Point
+  jawLeft: Point
+  jawRight: Point
+}
+
+const drawContactShadow = (ctx: CanvasRenderingContext2D, y: number, radius: number, strength: number) => {
+  ctx.save()
+  ctx.translate(0, y)
+  ctx.scale(1, .3)
+  const shadow = ctx.createRadialGradient(0, 0, 0, 0, 0, radius)
+  shadow.addColorStop(0, `rgba(30,18,40,${strength})`)
+  shadow.addColorStop(1, 'rgba(30,18,40,0)')
+  ctx.fillStyle = shadow
+  ctx.beginPath()
+  ctx.arc(0, 0, radius, 0, TAU)
+  ctx.fill()
+  ctx.restore()
+}
+
+const drawPompom = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, base: string, shade: string) => {
   ctx.save()
   ctx.translate(x, y)
-  ctx.scale(width, width)
-  ctx.shadowColor = '#39224f88'
-  ctx.shadowBlur = .045
+  for (let i = 0; i < 12; i++) {
+    const angle = i * TAU / 12
+    ctx.beginPath()
+    ctx.arc(Math.cos(angle) * radius * .72, Math.sin(angle) * radius * .72, radius * .38, 0, TAU)
+    ctx.fillStyle = shade
+    ctx.fill()
+  }
+  const fluff = ctx.createRadialGradient(-radius * .25, -radius * .3, radius * .05, 0, 0, radius)
+  fluff.addColorStop(0, '#ffffff')
+  fluff.addColorStop(1, base)
   ctx.beginPath()
-  ctx.moveTo(-.34, 0)
-  ctx.lineTo(.02, -.68)
-  ctx.quadraticCurveTo(.13, -.3, .38, -.04)
-  ctx.closePath()
-  const hat = ctx.createLinearGradient(-.2, -.55, .25, .02)
-  hat.addColorStop(0, '#755293')
-  hat.addColorStop(1, '#302142')
-  ctx.fillStyle = hat
+  ctx.arc(0, 0, radius * .86, 0, TAU)
+  ctx.fillStyle = fluff
   ctx.fill()
-  ctx.shadowBlur = 0
+  ctx.restore()
+}
+
+const drawFurBandFront = (ctx: CanvasRenderingContext2D, rx: number, ry: number, thickness: number) => {
+  ctx.save()
+  ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.ellipse(0, .02, .49, .105, -.04, 0, Math.PI * 2)
-  ctx.fillStyle = '#342440'
-  ctx.fill()
-  ctx.strokeStyle = '#c99a4d'
-  ctx.lineWidth = .045
+  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI, false)
+  ctx.strokeStyle = '#fffaf4'
+  ctx.lineWidth = thickness
   ctx.stroke()
+  const bumps = 24
+  for (let i = 0; i <= bumps; i++) {
+    const angle = i / bumps * Math.PI
+    const x = Math.cos(angle) * rx
+    const y = Math.sin(angle) * ry
+    ;[-1, 1].forEach(side => {
+      ctx.beginPath()
+      ctx.arc(x, y + side * thickness * .46, thickness * (.2 + ((i + (side > 0 ? 1 : 0)) % 2) * .07), 0, TAU)
+      ctx.fillStyle = '#fffaf4'
+      ctx.fill()
+    })
+  }
   ctx.beginPath()
-  ctx.moveTo(-.16, -.25)
-  ctx.quadraticCurveTo(.02, -.31, .21, -.19)
-  ctx.lineTo(.27, -.12)
-  ctx.quadraticCurveTo(.03, -.2, -.2, -.12)
+  ctx.ellipse(0, thickness * .14, rx, ry, 0, .06, Math.PI - .06, false)
+  ctx.strokeStyle = 'rgba(222,170,176,.38)'
+  ctx.lineWidth = thickness * .26
+  ctx.stroke()
+  ctx.restore()
+}
+
+const drawWitchHat = (ctx: CanvasRenderingContext2D, f: HatFrame) => {
+  const rx = f.hr * 1.62
+  const ry = Math.max(.035, rx * f.brimTilt * .72)
+  const bw = f.hr * .9
+  const bry = Math.max(.028, bw * f.brimTilt * .8)
+  const height = f.hr * 2.35 * f.crown
+  const apexX = f.hr * .3
+  const bandHeight = f.hr * .2
+  const bandWidth = bw * (1 - bandHeight / height * .8)
+
+  drawContactShadow(ctx, ry + .02, bw * 1.15, .38)
+
+  // Brim: dark underside edge first, then the lit top surface.
+  ctx.save()
+  ctx.shadowColor = 'rgba(20,10,30,.45)'
+  ctx.shadowBlur = .025 * f.px
+  ctx.shadowOffsetY = .012 * f.px
+  ctx.beginPath()
+  ctx.ellipse(0, .012, rx, ry, 0, 0, TAU)
+  ctx.fillStyle = '#1c1228'
+  ctx.fill()
+  ctx.restore()
+  const brim = ctx.createLinearGradient(-rx, 0, rx, 0)
+  brim.addColorStop(0, '#5a4073')
+  brim.addColorStop(.5, '#34234a')
+  brim.addColorStop(1, '#4b3463')
+  ctx.beginPath()
+  ctx.ellipse(0, 0, rx, ry, 0, 0, TAU)
+  ctx.fillStyle = brim
+  ctx.fill()
+  ctx.strokeStyle = '#8c6aa8aa'
+  ctx.lineWidth = .008
+  ctx.stroke()
+
+  // Crown: its base follows the front arc of the brim ellipse, so it grows out of the brim.
+  const crownPath = () => {
+    ctx.beginPath()
+    ctx.moveTo(-bw, 0)
+    ctx.bezierCurveTo(-bw * .78, -height * .36, apexX - f.hr * .1, -height * .82, apexX, -height)
+    ctx.bezierCurveTo(apexX + f.hr * .12, -height * .8, bw * .7, -height * .34, bw, 0)
+    ctx.ellipse(0, 0, bw, bry, 0, 0, Math.PI, false)
+    ctx.closePath()
+  }
+  crownPath()
+  const cone = ctx.createLinearGradient(-bw, 0, bw, 0)
+  cone.addColorStop(0, '#8a64aa')
+  cone.addColorStop(.45, '#4a3262')
+  cone.addColorStop(1, '#241634')
+  ctx.fillStyle = cone
+  ctx.fill()
+
+  ctx.save()
+  crownPath()
+  ctx.clip()
+  ctx.beginPath()
+  ctx.ellipse(0, 0, bw, bry, 0, 0, Math.PI, false)
+  ctx.ellipse(0, -bandHeight, bandWidth, bry, 0, Math.PI, 0, true)
   ctx.closePath()
   ctx.fillStyle = '#ed8ca2'
   ctx.fill()
-  drawStar(ctx, .02, -.34, .075, '#ffd978')
   ctx.restore()
-}
 
-const drawSantaHat = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number) => {
-  ctx.save()
-  ctx.translate(x, y)
-  ctx.scale(width, width)
+  // Buckle
+  const buckleY = bry - bandHeight * .5
   ctx.beginPath()
-  ctx.moveTo(-.42, 0)
-  ctx.quadraticCurveTo(-.18, -.35, .29, -.58)
-  ctx.quadraticCurveTo(.32, -.21, .46, -.02)
-  ctx.closePath()
-  const red = ctx.createLinearGradient(-.2, -.5, .35, 0)
-  red.addColorStop(0, '#ff7584')
-  red.addColorStop(1, '#bd2947')
-  ctx.fillStyle = red
-  ctx.fill()
-  ctx.beginPath()
-  ctx.ellipse(0, -.01, .46, .105, 0, 0, Math.PI * 2)
-  ctx.fillStyle = '#fff8f1'
-  ctx.fill()
-  ctx.strokeStyle = '#e8b8ba'
-  ctx.lineWidth = .025
+  ctx.rect(-bandHeight * .5, buckleY - bandHeight * .5, bandHeight, bandHeight)
+  ctx.strokeStyle = '#e5b95a'
+  ctx.lineWidth = bandHeight * .2
   ctx.stroke()
-  ctx.beginPath()
-  ctx.arc(.31, -.55, .095, 0, Math.PI * 2)
-  ctx.fillStyle = '#fffaf4'
-  ctx.fill()
-  ctx.restore()
+
+  drawStar(ctx, apexX * .35, -height * .52, .045, '#ffd978', f.now / 1200)
 }
 
-const drawPartyHat = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, now: number) => {
-  ctx.save()
-  ctx.translate(x, y)
-  ctx.scale(width, width)
+const drawSantaHat = (ctx: CanvasRenderingContext2D, f: HatFrame) => {
+  const hr = f.hr
+  const rx = hr * 1.07
+  const ry = Math.max(.03, rx * f.brimTilt * .7)
+  const thickness = hr * .27
+  const height = hr * 1.25 * f.crown
+
+  // The floppy end hangs down in the real world and swings with head movement.
+  const phi = -.7 + f.swing
+  const dir = {
+    x: f.gravity.x * Math.cos(phi) - f.gravity.y * Math.sin(phi),
+    y: f.gravity.x * Math.sin(phi) + f.gravity.y * Math.cos(phi),
+  }
+  const apex = { x: -hr * .12, y: -height }
+  const length = hr * .95
+  const tip = { x: apex.x + dir.x * length, y: apex.y + dir.y * length }
+  const normal = { x: -dir.y, y: dir.x }
+  const w0 = hr * .38
+  const w1 = hr * .2
+
+  drawContactShadow(ctx, ry + thickness * .55, rx * .9, .3)
+
+  // Far side of the fur band (mostly hidden behind the cap).
   ctx.beginPath()
-  ctx.moveTo(-.3, 0)
-  ctx.lineTo(.04, -.69)
-  ctx.lineTo(.34, 0)
+  ctx.ellipse(0, 0, rx, ry, 0, 0, TAU)
+  ctx.strokeStyle = '#eadcd8'
+  ctx.lineWidth = thickness * .9
+  ctx.stroke()
+
+  const red = ctx.createLinearGradient(-rx, -height, rx, 0)
+  red.addColorStop(0, '#ff7584')
+  red.addColorStop(.55, '#d63553')
+  red.addColorStop(1, '#a01f3a')
+  ctx.fillStyle = red
+
+  ctx.beginPath()
+  ctx.moveTo(-rx * .96, 0)
+  ctx.bezierCurveTo(-rx * .98, -height * .55, apex.x - hr * .35, apex.y + height * .12, apex.x, apex.y)
+  ctx.bezierCurveTo(apex.x + hr * .35, apex.y + height * .12, rx * .98, -height * .55, rx * .96, 0)
+  ctx.ellipse(0, 0, rx * .96, ry, 0, 0, Math.PI, false)
   ctx.closePath()
-  const paper = ctx.createLinearGradient(-.2, -.5, .3, 0)
+  ctx.fill()
+
+  ctx.beginPath()
+  ctx.moveTo(apex.x + normal.x * w0, apex.y + normal.y * w0)
+  ctx.lineTo(tip.x + normal.x * w1, tip.y + normal.y * w1)
+  ctx.lineTo(tip.x - normal.x * w1, tip.y - normal.y * w1)
+  ctx.lineTo(apex.x - normal.x * w0, apex.y - normal.y * w0)
+  ctx.closePath()
+  ctx.fill()
+
+  // Fold shading
+  ctx.beginPath()
+  ctx.moveTo(-rx * .45, ry * .4)
+  ctx.quadraticCurveTo(-rx * .4, -height * .5, apex.x, apex.y)
+  ctx.strokeStyle = 'rgba(120,20,40,.28)'
+  ctx.lineWidth = .02
+  ctx.stroke()
+
+  drawPompom(ctx, tip.x, tip.y, hr * .2, '#fff3ee', '#f1e3df')
+  drawFurBandFront(ctx, rx, ry, thickness)
+}
+
+const drawPartyHat = (ctx: CanvasRenderingContext2D, f: HatFrame) => {
+  const bw = f.hr * .62
+  const bry = Math.max(.025, bw * f.brimTilt * .9)
+  const height = f.hr * 2.0 * f.crown
+  const tilt = -.14
+  const cos = Math.cos(tilt)
+  const sin = Math.sin(tilt)
+  const baseLeft = { x: -bw * cos, y: -bw * sin }
+  const baseRight = { x: bw * cos, y: bw * sin }
+  const jawLeft = f.toHat(f.jawLeft)
+  const jawRight = f.toHat(f.jawRight)
+  const chin = f.toHat(f.chin)
+
+  drawContactShadow(ctx, bry + .015, bw * 1.1, .3)
+
+  ctx.save()
+  ctx.rotate(tilt)
+  const conePath = () => {
+    ctx.beginPath()
+    ctx.moveTo(-bw, 0)
+    ctx.lineTo(0, -height)
+    ctx.lineTo(bw, 0)
+    ctx.ellipse(0, 0, bw, bry, 0, 0, Math.PI, false)
+    ctx.closePath()
+  }
+  conePath()
+  const paper = ctx.createLinearGradient(-bw, -height * .6, bw, 0)
   paper.addColorStop(0, '#ff91b5')
   paper.addColorStop(.55, '#a78cf2')
   paper.addColorStop(1, '#65c9c4')
   ctx.fillStyle = paper
   ctx.fill()
+
+  ctx.save()
+  conePath()
+  ctx.clip()
+  ctx.lineCap = 'round'
+  for (let i = 0; i < 5; i++) {
+    const y = -height * (.12 + i * .17)
+    ctx.beginPath()
+    ctx.moveTo(-bw, y + bw * .35)
+    ctx.lineTo(bw, y - bw * .35)
+    ctx.strokeStyle = 'rgba(255,255,255,.42)'
+    ctx.lineWidth = .026
+    ctx.stroke()
+  }
+  for (let i = 0; i < 4; i++) {
+    const t = (i + 1) / 5
+    drawStar(ctx, (i % 2 ? .25 : -.25) * bw * (1 - t), -height * t * .85, .028, '#fff3a8', f.now / 800 + i)
+  }
+  const shade = ctx.createLinearGradient(-bw, 0, bw, 0)
+  shade.addColorStop(0, 'rgba(255,255,255,.18)')
+  shade.addColorStop(.6, 'rgba(0,0,0,0)')
+  shade.addColorStop(1, 'rgba(40,20,70,.22)')
+  ctx.fillStyle = shade
+  ctx.fillRect(-bw, -height, bw * 2, height + bry)
+  ctx.restore()
+
+  // White trim along the base
+  ctx.beginPath()
+  ctx.ellipse(0, 0, bw, bry, 0, 0, Math.PI, false)
   ctx.strokeStyle = '#fff7e9'
-  ctx.lineWidth = .035
+  ctx.lineWidth = .03
   ctx.stroke()
-  for (let i = 0; i < 3; i++) {
-    const t = (i + 1) / 4
-    drawStar(ctx, -.19 + t * .38, -.46 + t * .38, .045, '#fff3a8', now / 800 + i)
+
+  // Streamers + pompom on top
+  for (let i = 0; i < 9; i++) {
+    const angle = -Math.PI / 2 + (i - 4) * .38
+    const streamer = .07 + (i % 3) * .035
+    ctx.beginPath()
+    ctx.moveTo(0, -height)
+    ctx.lineTo(Math.cos(angle) * streamer, -height + Math.sin(angle) * streamer)
+    ctx.strokeStyle = ['#ffdb72', '#ff8fb0', '#7fd6cf'][i % 3]
+    ctx.lineWidth = .014
+    ctx.stroke()
   }
   ctx.beginPath()
-  ctx.arc(.04, -.72, .085, 0, Math.PI * 2)
+  ctx.arc(0, -height, .055, 0, TAU)
   ctx.fillStyle = '#ffdb72'
   ctx.fill()
+  ctx.restore()
+
+  // Elastic chin strap: from both sides of the base, down the jaw, under the chin.
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(baseLeft.x, baseLeft.y)
+  ctx.bezierCurveTo(jawLeft.x - .02, (baseLeft.y + jawLeft.y) / 2, jawLeft.x, jawLeft.y, chin.x - .12, chin.y + .035)
+  ctx.quadraticCurveTo(chin.x, chin.y + .11, chin.x + .12, chin.y + .035)
+  ctx.bezierCurveTo(jawRight.x, jawRight.y, jawRight.x + .02, (baseRight.y + jawRight.y) / 2, baseRight.x, baseRight.y)
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = 'rgba(70,40,60,.35)'
+  ctx.lineWidth = .014
+  ctx.stroke()
+  ctx.strokeStyle = '#ffe9f1'
+  ctx.lineWidth = .007
+  ctx.stroke()
   ctx.restore()
 }
 
@@ -315,7 +558,7 @@ const drawSnowflake = (ctx: CanvasRenderingContext2D, x: number, y: number, size
   ctx.lineWidth = .018
   ctx.lineCap = 'round'
   ctx.shadowColor = '#a8e7ff'
-  ctx.shadowBlur = .035
+  ctx.shadowBlur = (.035) * glowScale
   for (let arm = 0; arm < 6; arm++) {
     ctx.save()
     ctx.rotate(arm * Math.PI / 3)
@@ -359,7 +602,7 @@ const drawBlushFlower = (ctx: CanvasRenderingContext2D, x: number, y: number, si
   ctx.restore()
 }
 
-const drawBlushEffect = (ctx: CanvasRenderingContext2D, leftCheek: Point, rightCheek: Point, faceTop: Point, leftTemple: Point, rightTemple: Point, now: number) => {
+const drawBlushEffect = (ctx: CanvasRenderingContext2D, leftCheek: Point, rightCheek: Point, faceTop: Point, leftTemple: Point, rightTemple: Point, now: number, crownCenterX = 0, crownScale = 1, crownDrop = 0) => {
   ;[leftCheek, rightCheek].forEach((cheek, side) => {
     const blush = ctx.createRadialGradient(cheek.x, cheek.y, .015, cheek.x, cheek.y, .15)
     blush.addColorStop(0, '#f376a477')
@@ -395,7 +638,7 @@ const drawBlushEffect = (ctx: CanvasRenderingContext2D, leftCheek: Point, rightC
     { x: 0.49, size: .075, offset: -.12 },
   ]
   flowers.forEach((flower, index) => {
-    drawBlushFlower(ctx, flower.x, faceTop.y + flower.offset, flower.size, Math.sin(now / 1700 + index) * .035)
+    drawBlushFlower(ctx, crownCenterX + flower.x * crownScale, faceTop.y + flower.offset + crownDrop, flower.size * crownScale, Math.sin(now / 1700 + index) * .035)
   })
 
   drawStar(ctx, leftTemple.x - .055, leftTemple.y + .015, .034, '#fff8de', now / 900)
@@ -413,10 +656,10 @@ const drawEmoji = (ctx: CanvasRenderingContext2D, emoji: string, x: number, y: n
   ctx.restore()
 }
 
-const drawEar = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, inner: string, long = false) => {
+const drawEar = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, inner: string, long = false, side: -1 | 1 = 1) => {
   ctx.save()
   ctx.translate(x, y)
-  ctx.rotate(x < 0 ? -.18 : .18)
+  ctx.rotate(side * (long ? .09 : .18))
   ctx.beginPath()
   if (long) {
     ctx.ellipse(0, -.12, .105, .31, 0, 0, Math.PI * 2)
@@ -490,7 +733,7 @@ const drawDogEar = (ctx: CanvasRenderingContext2D, x: number, y: number, side: -
 const drawAnimalNose = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size = .045) => {
   ctx.save()
   ctx.shadowColor = '#35201c55'
-  ctx.shadowBlur = size * .5
+  ctx.shadowBlur = (size * .5) * glowScale
   ctx.beginPath()
   ctx.ellipse(x, y, size, size * .72, 0, 0, Math.PI * 2)
   const nose = ctx.createLinearGradient(x, y - size, x, y + size)
@@ -513,7 +756,7 @@ const drawAnimalNose = (ctx: CanvasRenderingContext2D, x: number, y: number, col
 const drawCatNose = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number) => {
   ctx.save()
   ctx.shadowColor = '#633c4966'
-  ctx.shadowBlur = size * .35
+  ctx.shadowBlur = (size * .35) * glowScale
   ctx.beginPath()
   ctx.moveTo(x - size, y - size * .4)
   ctx.quadraticCurveTo(x, y - size * .8, x + size, y - size * .4)
@@ -591,7 +834,7 @@ const drawDogMuzzle = (ctx: CanvasRenderingContext2D, nose: Point, mouth: Point,
 const drawGlossyEye = (ctx: CanvasRenderingContext2D, center: Point, radiusX: number, radiusY: number, irisColor: string) => {
   ctx.save()
   ctx.shadowColor = '#291c2655'
-  ctx.shadowBlur = radiusX * .24
+  ctx.shadowBlur = (radiusX * .24) * glowScale
   ctx.beginPath()
   ctx.ellipse(center.x, center.y, radiusX, radiusY, 0, 0, Math.PI * 2)
   ctx.fillStyle = '#fffdfb'
@@ -637,26 +880,52 @@ const drawBigEyes = (ctx: CanvasRenderingContext2D, leftEye: Point, rightEye: Po
   drawGlossyEye(ctx, rightIris, radiusX, radiusY, '#4b3027')
 }
 
-const drawAlienEyes = (ctx: CanvasRenderingContext2D, leftEye: Point, rightEye: Point) => {
-  ;[leftEye, rightEye].forEach(eye => {
-    ctx.save()
-    ctx.shadowColor = '#6cff7a'
-    ctx.shadowBlur = .025
-    const iris = ctx.createRadialGradient(eye.x - .025, eye.y - .035, .006, eye.x, eye.y, .13)
-    iris.addColorStop(0, '#39492d')
-    iris.addColorStop(.55, '#080d10')
-    iris.addColorStop(1, '#020408')
-    ctx.beginPath()
-    ctx.ellipse(eye.x, eye.y, .12, .14, 0, 0, Math.PI * 2)
-    ctx.fillStyle = iris
-    ctx.fill()
-    ctx.shadowBlur = 0
-    ctx.beginPath()
-    ctx.ellipse(eye.x - .035, eye.y - .055, .025, .018, -.45, 0, Math.PI * 2)
-    ctx.fillStyle = '#e7ffd1'
-    ctx.fill()
-    ctx.restore()
-  })
+const smoothClosedPath = (ctx: CanvasRenderingContext2D, points: Point[]) => {
+  const count = points.length
+  const mid = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
+  const start = mid(points[count - 1], points[0])
+  ctx.moveTo(start.x, start.y)
+  for (let i = 0; i < count; i++) {
+    const point = points[i]
+    const next = mid(point, points[(i + 1) % count])
+    ctx.quadraticCurveTo(point.x, point.y, next.x, next.y)
+  }
+  ctx.closePath()
+}
+
+// One slanted almond eye sized from the real eye corners. `pointedSide` is the side of the
+// eye (-1 = left, 1 = right) where the almond comes to a point; `slant` lifts that end.
+const drawAlienEye = (ctx: CanvasRenderingContext2D, left: Point, right: Point, pointedSide: -1 | 1, slant: number) => {
+  const cx = (left.x + right.x) / 2
+  const cy = (left.y + right.y) / 2
+  const axis = Math.atan2(right.y - left.y, right.x - left.x)
+  const width = Math.hypot(right.x - left.x, right.y - left.y) * 1.7
+  const height = width * .36
+  const tipX = pointedSide * width / 2
+  const roundX = -pointedSide * width * .46
+
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.rotate(axis + slant)
+  ctx.shadowColor = '#6cff7a'
+  ctx.shadowBlur = .02 * glowScale
+  ctx.beginPath()
+  ctx.moveTo(tipX, 0)
+  ctx.bezierCurveTo(tipX * .3, -height * 1.05, roundX * .95, -height * 1.1, roundX, 0)
+  ctx.bezierCurveTo(roundX * .95, height * 1.2, tipX * .3, height * 1.15, tipX, 0)
+  ctx.closePath()
+  const iris = ctx.createRadialGradient(-pointedSide * width * .12, -height * .25, width * .02, 0, 0, width * .6)
+  iris.addColorStop(0, '#39492d')
+  iris.addColorStop(.5, '#080d10')
+  iris.addColorStop(1, '#020408')
+  ctx.fillStyle = iris
+  ctx.fill()
+  ctx.shadowBlur = 0
+  ctx.beginPath()
+  ctx.ellipse(-pointedSide * width * .17, -height * .32, width * .1, height * .12, -.45, 0, TAU)
+  ctx.fillStyle = '#e7ffd1'
+  ctx.fill()
+  ctx.restore()
 }
 
 const drawAlienFace = (ctx: CanvasRenderingContext2D, face: Face, width: number, height: number, toLocal: (point: Point) => Point) => {
@@ -664,21 +933,21 @@ const drawAlienFace = (ctx: CanvasRenderingContext2D, face: Face, width: number,
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365,
     379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93,
     234, 127, 162, 21, 54, 103, 67, 109,
-  ]
+  ].map(index => toLocal(pointAt(face, index, width, height)))
   ctx.save()
   ctx.beginPath()
-  outline.forEach((index, pointIndex) => {
-    const point = toLocal(pointAt(face, index, width, height))
-    if (pointIndex === 0) ctx.moveTo(point.x, point.y)
-    else ctx.lineTo(point.x, point.y)
-  })
-  ctx.closePath()
+  smoothClosedPath(ctx, outline)
   const tint = ctx.createLinearGradient(0, -.45, 0, .55)
-  tint.addColorStop(0, '#b8ee70b8')
-  tint.addColorStop(.55, '#91d548a8')
-  tint.addColorStop(1, '#71bd42a8')
+  tint.addColorStop(0, '#b8ee70c4')
+  tint.addColorStop(.55, '#91d548b0')
+  tint.addColorStop(1, '#71bd42b0')
   ctx.fillStyle = tint
   ctx.fill()
+  // Feathered edge so the skin tint blends into the real face instead of a hard cut-out.
+  ctx.lineJoin = 'round'
+  ctx.strokeStyle = '#8fd64855'
+  ctx.lineWidth = .035
+  ctx.stroke()
   ctx.restore()
 }
 
@@ -768,7 +1037,7 @@ const drawRobotVisor = (ctx: CanvasRenderingContext2D, leftEye: Point, rightEye:
 
   ctx.save()
   ctx.shadowColor = '#47d9ff99'
-  ctx.shadowBlur = .035
+  ctx.shadowBlur = (.035) * glowScale
   drawRoundedPanel(ctx, panelX, panelY, panelWidth, panelHeight, radius)
   const glass = ctx.createLinearGradient(0, panelY, 0, panelY + panelHeight)
   glass.addColorStop(0, '#526b8b')
@@ -784,7 +1053,7 @@ const drawRobotVisor = (ctx: CanvasRenderingContext2D, leftEye: Point, rightEye:
   ;[leftEye, rightEye].forEach(eye => {
     const eyeX = Math.max(panelX + .12, Math.min(panelX + panelWidth - .12, eye.x))
     ctx.shadowColor = '#00e5ff'
-    ctx.shadowBlur = .08
+    ctx.shadowBlur = (.08) * glowScale
     drawRoundedPanel(ctx, eyeX - .022, centerY - .068, .044, .136, .02)
     ctx.fillStyle = '#55efff'
     ctx.fill()
@@ -846,12 +1115,31 @@ const drawTinyFace = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, fa
   ctx.restore()
 }
 
-const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, face: Face, effect: CameraEffectId, width: number, height: number, now: number, advancedFrame: boolean) => {
+// Tiny pendulum so floppy parts (Santa hat tip) swing when the head moves or tilts.
+const hatPhysics = new Map<number, { swing: number; velocity: number; x: number; roll: number; time: number }>()
+const updateHatSwing = (index: number, x: number, faceWidth: number, roll: number, now: number) => {
+  let state = hatPhysics.get(index)
+  if (!state) {
+    state = { swing: 0, velocity: 0, x, roll, time: now }
+    hatPhysics.set(index, state)
+  }
+  const dt = Math.min(.05, Math.max(.001, (now - state.time) / 1000))
+  state.velocity += -((x - state.x) / faceWidth) * 260 - (roll - state.roll) * 40
+  state.velocity += (-110 * state.swing - 8 * state.velocity) * dt
+  state.swing = Math.max(-.7, Math.min(.7, state.swing + state.velocity * dt))
+  state.x = x
+  state.roll = roll
+  state.time = now
+  return state.swing
+}
+
+const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, face: Face, effect: CameraEffectId, width: number, height: number, now: number, advancedFrame: boolean, faceIndex = 0) => {
   if (face.length < 455) return
   const left = pointAt(face, 234, width, height)
   const right = pointAt(face, 454, width, height)
   const faceWidth = Math.hypot(right.x - left.x, right.y - left.y)
   if (faceWidth < 1) return
+  glowScale = faceWidth
   const angle = Math.atan2(right.y - left.y, right.x - left.x)
   const center = midpoint(left, right)
   const toLocal = (point: Point): Point => {
@@ -884,50 +1172,66 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
   ctx.rotate(angle)
   ctx.scale(faceWidth, faceWidth)
 
-  const headAccessory = getHeadAccessoryPlacement(top, leftTemple, rightTemple, leftEyeOuter, rightEyeOuter)
+  // Head orientation from the mesh depth values (landmark z is on the same scale as x).
+  const zAt = (index: number) => (face[index]?.z ?? 0) * width
+  const faceHeightPx = Math.max(Math.hypot(
+    (face[10].x - face[152].x) * width,
+    (face[10].y - face[152].y) * height,
+  ), faceWidth * .6)
+  const pose = {
+    yaw: Math.atan2(zAt(454) - zAt(234), faceWidth),
+    pitch: Math.atan2(zAt(10) - zAt(152), faceHeightPx),
+  }
+  const headAccessory = getHeadAccessoryPlacement(top, leftTemple, rightTemple, leftEyeOuter, rightEyeOuter, pose)
   const { leftEar, rightEar } = headAccessory
   const leftEarX = leftEar.x
   const rightEarX = rightEar.x
   const headTopY = top.y - .12
-  const hatBaseY = headAccessory.hatSeatY
   const earTopY = headTopY + .04
-  const drawFittedHat = (drawHat: (hatContext: CanvasRenderingContext2D, width: number) => void) => {
+  const chinLocal = toLocal(pointAt(face, 152, width, height))
+  const jawLeft = toLocal(pointAt(face, 172, width, height))
+  const jawRight = toLocal(pointAt(face, 397, width, height))
+  const swing = updateHatSwing(faceIndex, center.x, faceWidth, angle, now)
+  const drawFittedHat = (drawHat: (hatContext: CanvasRenderingContext2D, frame: HatFrame) => void) => {
+    const seat = { x: headAccessory.headCenterX, y: headAccessory.hatSeatY }
+    const rotation = headAccessory.hatRotation
+    const toHat = (point: Point): Point => {
+      const dx = point.x - seat.x
+      const dy = point.y - seat.y
+      const cosine = Math.cos(-rotation)
+      const sine = Math.sin(-rotation)
+      return { x: dx * cosine - dy * sine, y: dx * sine + dy * cosine }
+    }
+    // Real-world "down" expressed in the hat's rotated frame.
+    const total = angle + rotation
     ctx.save()
-    ctx.translate(headAccessory.headCenterX, hatBaseY)
-    ctx.rotate(headAccessory.hatRotation)
-    ctx.beginPath()
-    ctx.ellipse(0, .025, headAccessory.hatWidth * .4, .035, 0, 0, Math.PI * 2)
-    ctx.fillStyle = '#2c1f282d'
-    ctx.fill()
-    drawHat(ctx, headAccessory.hatWidth)
+    ctx.translate(seat.x, seat.y)
+    ctx.rotate(rotation)
+    drawHat(ctx, {
+      hr: headAccessory.headWidth / 2,
+      brimTilt: headAccessory.brimTilt,
+      crown: headAccessory.crownScale,
+      gravity: { x: Math.sin(total), y: Math.cos(total) },
+      swing,
+      now,
+      px: faceWidth,
+      toHat,
+      chin: chinLocal,
+      jawLeft,
+      jawRight,
+    })
     ctx.restore()
   }
   switch (effect) {
     case 'dog':
-      ctx.save()
-      ctx.translate(leftEar.x, leftEar.y)
-      ctx.scale(leftEar.scale, leftEar.scale)
-      drawDogEar(ctx, 0, headTopY - leftEar.y + .06, -1)
-      ctx.restore()
-      ctx.save()
-      ctx.translate(rightEar.x, rightEar.y)
-      ctx.scale(rightEar.scale, rightEar.scale)
-      drawDogEar(ctx, 0, headTopY - rightEar.y + .06, 1)
-      ctx.restore()
+      withEarFrame(ctx, leftEar, .5, () => drawDogEar(ctx, 0, headTopY - leftEar.y + .06, -1))
+      withEarFrame(ctx, rightEar, .5, () => drawDogEar(ctx, 0, headTopY - rightEar.y + .06, 1))
       drawDogMuzzle(ctx, nose, mouth, lowerLip, leftMouthCorner, rightMouthCorner, faceWidth)
       drawAnimalNose(ctx, nose.x, nose.y + .025, '#49342e', .05)
       break
     case 'cat':
-      ctx.save()
-      ctx.translate(leftEar.x, leftEar.y)
-      ctx.scale(leftEar.scale, leftEar.scale)
-      drawEar(ctx, 0, earTopY - leftEar.y, '#6d5961', '#edb4c5')
-      ctx.restore()
-      ctx.save()
-      ctx.translate(rightEar.x, rightEar.y)
-      ctx.scale(rightEar.scale, rightEar.scale)
-      drawEar(ctx, 0, earTopY - rightEar.y, '#6d5961', '#edb4c5')
-      ctx.restore()
+      withEarFrame(ctx, leftEar, 0, () => drawEar(ctx, 0, earTopY - leftEar.y, '#6d5961', '#edb4c5', false, -1))
+      withEarFrame(ctx, rightEar, 0, () => drawEar(ctx, 0, earTopY - rightEar.y, '#6d5961', '#edb4c5', false, 1))
       drawCatNose(ctx, nose.x, nose.y + .012, .032)
       ctx.strokeStyle = '#695660'
       ctx.lineWidth = .008
@@ -948,18 +1252,8 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       drawStar(ctx, nose.x - .15, nose.y - .04, .018, '#fff4f1')
       break
     case 'bunny':
-      ctx.save()
-      ctx.translate(leftEar.x, leftEar.y)
-      ctx.rotate(-.08)
-      ctx.scale(leftEar.scale, leftEar.scale)
-      drawEar(ctx, 0, headTopY - leftEar.y - .11, '#fff0f2', '#efaebf', true)
-      ctx.restore()
-      ctx.save()
-      ctx.translate(rightEar.x, rightEar.y)
-      ctx.rotate(.08)
-      ctx.scale(rightEar.scale, rightEar.scale)
-      drawEar(ctx, 0, headTopY - rightEar.y - .11, '#fff0f2', '#efaebf', true)
-      ctx.restore()
+      withEarFrame(ctx, leftEar, .45, () => drawEar(ctx, 0, headTopY - leftEar.y - .11, '#fff0f2', '#efaebf', true, -1))
+      withEarFrame(ctx, rightEar, .45, () => drawEar(ctx, 0, headTopY - rightEar.y - .11, '#fff0f2', '#efaebf', true, 1))
       drawAnimalNose(ctx, nose.x, nose.y + .02, '#e58ba2', .03)
       break
     case 'bear':
@@ -988,7 +1282,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
         })
       })
       drawAnimalNose(ctx, nose.x, nose.y + .04, '#705041', .05)
-      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now)
+      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now, headAccessory.headCenterX, headAccessory.headWidth / 1.04, pose.pitch * .07)
       break
     case 'deer':
       ctx.strokeStyle = '#a7784e'
@@ -999,7 +1293,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
         const anchor = side < 0 ? leftEar : rightEar
         withAnchorScale(ctx, anchor, anchor.scale, () => {
           ctx.shadowColor = '#69452d66'
-          ctx.shadowBlur = .025
+          ctx.shadowBlur = (.025) * glowScale
           ctx.beginPath()
           ctx.moveTo(x, headTopY + .02)
           ctx.lineTo(x + side * .02, headTopY - .21)
@@ -1060,7 +1354,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       })
       break
     case 'blush':
-      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now)
+      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now, headAccessory.headCenterX, headAccessory.headWidth / 1.04, pose.pitch * .07)
       break
     case 'sparkle-face':
       ;[
@@ -1091,7 +1385,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
         ctx.fill()
         ctx.restore()
       })
-      drawHalo(ctx, 0, top.y - .24, .24, now)
+      drawHalo(ctx, headAccessory.headCenterX, top.y - .24 + pose.pitch * .1, headAccessory.headWidth * .24, Math.max(.025, headAccessory.headWidth * .24 * headAccessory.brimTilt * .6), headAccessory.hatRotation, now)
       for (let i = 0; i < 8; i++) {
         const angle = now / 1800 + i * Math.PI / 4
         const x = Math.cos(angle) * (.42 + i % 2 * .05)
@@ -1106,7 +1400,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       drawStar(ctx, rightEye.x + .13, rightEye.y - .08, .028, '#fff4df')
       break
     case 'angel':
-      drawHalo(ctx, 0, top.y - .27, .25, now)
+      drawHalo(ctx, headAccessory.headCenterX, top.y - .27 + pose.pitch * .1, headAccessory.headWidth * .25, Math.max(.025, headAccessory.headWidth * .25 * headAccessory.brimTilt * .6), headAccessory.hatRotation, now)
       ;[-1, 1].forEach(side => {
         ctx.save()
         ctx.translate(side * .42, top.y + .08)
@@ -1124,9 +1418,9 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       drawStar(ctx, .37, top.y - .06, .045, '#ffe7a0')
       break
     case 'coquette':
-      drawBow(ctx, leftEarX, leftEar.y + .01, .22 * leftEar.scale, -.14)
-      drawBow(ctx, rightEarX, rightEar.y + .01, .22 * rightEar.scale, .14)
-      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now)
+      drawBow(ctx, leftEarX, leftEar.y + .01, .22 * leftEar.scale, leftEar.tilt * .8)
+      drawBow(ctx, rightEarX, rightEar.y + .01, .22 * rightEar.scale, rightEar.tilt * .8)
+      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now, headAccessory.headCenterX, headAccessory.headWidth / 1.04, pose.pitch * .07)
       drawHeart(ctx, -.43, -.02 + Math.sin(now / 400) * .025, .05, '#ef9aae')
       drawHeart(ctx, .43, .14 + Math.cos(now / 430) * .025, .05, '#ef9aae')
       break
@@ -1166,7 +1460,8 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
     case 'alien':
       if (!advancedFrame) {
         drawAlienFace(ctx, face, width, height, toLocal)
-        drawAlienEyes(ctx, leftEye, rightEye)
+        drawAlienEye(ctx, leftEyeOuter, leftEyeInner, -1, .32)
+        drawAlienEye(ctx, rightEyeInner, rightEyeOuter, 1, -.32)
       }
       drawStar(ctx, 0, top.y - .12, .035, '#d6ffad')
       ctx.beginPath()
@@ -1179,7 +1474,7 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       ctx.arc(.14, top.y - .56, .055, 0, Math.PI * 2)
       ctx.fillStyle = '#c9ff80'
       ctx.shadowColor = '#aaff5a'
-      ctx.shadowBlur = .06
+      ctx.shadowBlur = (.06) * glowScale
       ctx.fill()
       ctx.shadowBlur = 0
       break
@@ -1197,26 +1492,26 @@ const drawFaceEffect = (ctx: CanvasRenderingContext2D, video: HTMLVideoElement, 
       })
       break
     case 'halloween':
-      drawFittedHat((hatContext, width) => drawWitchHat(hatContext, 0, 0, width))
+      drawFittedHat(drawWitchHat)
       drawPumpkin(ctx, .4, top.y + .2, .17)
       drawStar(ctx, -.4, top.y + .1, .05, '#f59a63', now / 700)
       drawStar(ctx, .4, top.y + .1, .05, '#d4a0db', now / 700)
       break
     case 'christmas':
-      drawFittedHat((hatContext, width) => drawSantaHat(hatContext, 0, 0, width * .96))
+      drawFittedHat(drawSantaHat)
       drawSnowflake(ctx, -.42, top.y + .12 + Math.sin(now / 900) * .025, .09, now / 1600)
       drawSnowflake(ctx, .42, top.y + .2 + Math.cos(now / 1100) * .025, .075, -now / 1400)
       drawStar(ctx, 0, top.y + .17, .024, '#ffedb5', now / 800)
       break
     case 'valentines':
-      drawBow(ctx, leftEarX, leftEar.y + .01, .19 * leftEar.scale, -.12)
-      drawBow(ctx, rightEarX, rightEar.y + .01, .19 * rightEar.scale, .12)
-      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now)
+      drawBow(ctx, leftEarX, leftEar.y + .01, .19 * leftEar.scale, leftEar.tilt * .7)
+      drawBow(ctx, rightEarX, rightEar.y + .01, .19 * rightEar.scale, rightEar.tilt * .7)
+      drawBlushEffect(ctx, leftBlush, rightBlush, top, leftTemple, rightTemple, now, headAccessory.headCenterX, headAccessory.headWidth / 1.04, pose.pitch * .07)
       drawHeart(ctx, -.44, top.y + .12 + Math.sin(now / 350) * .03, .05, '#f6a9bc')
       drawHeart(ctx, .44, top.y + .25 + Math.cos(now / 360) * .03, .05, '#f6a9bc')
       break
     case 'birthday':
-      drawFittedHat((hatContext, width) => drawPartyHat(hatContext, 0, 0, width * .94, now))
+      drawFittedHat(drawPartyHat)
       for (let i = 0; i < 8; i++) {
         const x = Math.sin(i * 7.3 + now / 1200) * .55
         const y = top.y + .05 + ((i * 19) % 42) / 100
@@ -1251,13 +1546,113 @@ export const renderCameraFrame = (
   }
   ctx.drawImage(advancedFrame ?? video, 0, 0, width, height)
   if (effect === 'none' || !faces) return
-  faces.forEach(face => {
+  faces.forEach((face, faceIndex) => {
     if (face.length < 455) return
     const left = pointAt(face, 234, width, height)
     const right = pointAt(face, 454, width, height)
     const faceWidth = Math.hypot(right.x - left.x, right.y - left.y)
     if (faceWidth < 1) return
 
-    drawFaceEffect(ctx, video, face, effect, width, height, now, advancedFrame !== null)
+    drawFaceEffect(ctx, video, face, effect, width, height, now, advancedFrame !== null, faceIndex)
   })
+}
+
+/**
+ * Adaptive (One Euro) smoothing + face tracking across frames.
+ *  - still head  -> heavy smoothing, so accessories don't jitter
+ *  - moving head -> almost no smoothing, so accessories don't lag behind
+ * Faces are matched by position so effects don't swap between people, and a face that drops out
+ * for a split second is held for 250ms instead of making the effect flicker off.
+ */
+type FaceTrack = {
+  out: NormalizedLandmark[]
+  raw: Float32Array
+  filtered: Float32Array
+  deriv: Float32Array
+  lastUpdate: number
+  lastSeen: number
+}
+
+export type FaceSmoother = {
+  update: (detected: readonly (readonly NormalizedLandmark[])[], now: number) => NormalizedLandmark[][]
+  reset: () => void
+}
+
+const smoothingAlpha = (cutoff: number, dt: number) => 1 / (1 + 1 / (TAU * cutoff) / dt)
+
+export const createFaceSmoother = (): FaceSmoother => {
+  let tracks: FaceTrack[] = []
+
+  const centerOf = (face: readonly NormalizedLandmark[]): Point => ({
+    x: (face[234].x + face[454].x) / 2,
+    y: (face[234].y + face[454].y) / 2,
+  })
+
+  const filterValue = (track: FaceTrack, index: number, value: number, dt: number, minCutoff: number, beta: number) => {
+    const speed = (value - track.raw[index]) / dt
+    track.deriv[index] += smoothingAlpha(1, dt) * (speed - track.deriv[index])
+    const cutoff = minCutoff + beta * Math.abs(track.deriv[index])
+    track.filtered[index] += smoothingAlpha(cutoff, dt) * (value - track.filtered[index])
+    track.raw[index] = value
+    return track.filtered[index]
+  }
+
+  const createTrack = (face: readonly NormalizedLandmark[], now: number): FaceTrack => {
+    const raw = new Float32Array(face.length * 3)
+    face.forEach((landmark, i) => {
+      raw[i * 3] = landmark.x
+      raw[i * 3 + 1] = landmark.y
+      raw[i * 3 + 2] = landmark.z
+    })
+    return { out: face.map(landmark => ({ ...landmark })), raw, filtered: raw.slice(), deriv: new Float32Array(face.length * 3), lastUpdate: now, lastSeen: now }
+  }
+
+  const update: FaceSmoother['update'] = (detected, now) => {
+    const taken = new Set<FaceTrack>()
+    const next: FaceTrack[] = []
+
+    detected.forEach(face => {
+      if (face.length < 455) return
+      const center = centerOf(face)
+      let best: FaceTrack | undefined
+      let bestDistance = .3
+      for (const candidate of tracks) {
+        if (taken.has(candidate) || candidate.out.length !== face.length) continue
+        const trackCenter = centerOf(candidate.out)
+        const distance = Math.hypot(trackCenter.x - center.x, trackCenter.y - center.y)
+        if (distance < bestDistance) {
+          bestDistance = distance
+          best = candidate
+        }
+      }
+
+      if (!best) {
+        next.push(createTrack(face, now))
+        return
+      }
+      const track: FaceTrack = best
+      taken.add(track)
+      const dt = Math.min(.2, Math.max(.004, (now - track.lastUpdate) / 1000))
+      face.forEach((landmark, i) => {
+        track.out[i] = {
+          ...landmark,
+          x: filterValue(track, i * 3, landmark.x, dt, 1.5, 45),
+          y: filterValue(track, i * 3 + 1, landmark.y, dt, 1.5, 45),
+          // Depth is noisier, so it gets a lower cutoff.
+          z: filterValue(track, i * 3 + 2, landmark.z, dt, .9, 25),
+        }
+      })
+      track.lastUpdate = now
+      track.lastSeen = now
+      next.push(track)
+    })
+
+    tracks.forEach(track => {
+      if (!taken.has(track) && now - track.lastSeen < 250) next.push(track)
+    })
+    tracks = next
+    return tracks.map(track => track.out)
+  }
+
+  return { update, reset: () => { tracks = [] } }
 }

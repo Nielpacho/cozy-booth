@@ -4,6 +4,8 @@ import type { CameraEffectId } from './cameraEffects'
 type Point = { x: number; y: number }
 type Face = readonly NormalizedLandmark[]
 
+const MAX_FACES = 3
+
 const vertexShader = `
 attribute vec2 aPosition;
 attribute vec2 aUv;
@@ -15,124 +17,99 @@ void main() {
 }
 `
 
+// All warps work in "metric" space (units of the longest video side) so circles stay circles
+// on any aspect ratio, and every radius is derived from the tracked face, so the effect
+// scales with how close you are to the camera and rotates with your head.
+//
+// Per-face uniforms are packed into vec4s to stay inside the 16-vector fragment limit:
+//   uEyes[i]      = (leftEye.xy, rightEye.xy)                  uv
+//   uMouthFace[i] = (mouth.xy, faceCenter.xy)                  uv
+//   uRadii[i]     = (eyeRadius.xy, mouthRadius.xy)             metric
+//   uFace[i]      = (faceRadius.xy, faceAngle, unused)         metric / radians
 const fragmentShader = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 
 varying vec2 vUv;
 uniform sampler2D uVideo;
 uniform vec2 uResolution;
 uniform int uEffect;
 uniform int uFaceCount;
-uniform vec2 uLeftEye[3];
-uniform vec2 uRightEye[3];
-uniform vec2 uMouth[3];
-uniform vec2 uFaceCenter[3];
-uniform vec2 uFaceRadius[3];
-uniform float uFaceAngle[3];
+uniform vec4 uEyes[3];
+uniform vec4 uMouthFace[3];
+uniform vec4 uRadii[3];
+uniform vec4 uFace[3];
+
+float maxSide() {
+  return max(uResolution.x, uResolution.y);
+}
 
 vec2 metric(vec2 uv) {
-  float scale = max(uResolution.x, uResolution.y);
-  return vec2((uv.x - 0.5) * uResolution.x / scale, (uv.y - 0.5) * uResolution.y / scale);
+  return (uv - 0.5) * uResolution / maxSide();
 }
 
-vec2 bulge(vec2 uv, vec2 center, vec2 radius, float strength) {
-  vec2 delta = metric(uv) - metric(center);
-  vec2 safeRadius = max(radius, vec2(0.001));
-  float distanceFromCenter = length(delta / safeRadius);
-  float weight = 1.0 - smoothstep(0.0, 1.0, distanceFromCenter);
-  vec2 source = delta / (1.0 + strength * weight);
-  return uv + (source - delta) * max(uResolution.x, uResolution.y) / uResolution;
+vec2 uvDelta(vec2 delta) {
+  return delta * maxSide() / uResolution;
 }
 
-vec2 pinch(vec2 uv, vec2 center, vec2 radius, float strength) {
-  vec2 delta = metric(uv) - metric(center);
-  vec2 safeRadius = max(radius, vec2(0.001));
-  float distanceFromCenter = length(delta / safeRadius);
-  float weight = 1.0 - smoothstep(0.0, 1.0, distanceFromCenter);
-  vec2 source = delta * (1.0 + strength * weight);
-  return uv + (source - delta) * max(uResolution.x, uResolution.y) / uResolution;
+vec2 rotate2(vec2 v, float a) {
+  float c = cos(a);
+  float s = sin(a);
+  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
 }
 
-float faceMask(vec2 uv, vec2 center, vec2 radius, float angle) {
+// Magnifies the area inside a rotated ellipse.
+vec2 bulge(vec2 uv, vec2 center, vec2 radius, float angle, float strength) {
   vec2 delta = metric(uv) - metric(center);
-  float cosine = cos(angle);
-  float sine = sin(angle);
-  vec2 rotated = vec2(cosine * delta.x + sine * delta.y, -sine * delta.x + cosine * delta.y);
-  float distanceFromCenter = length(rotated / max(radius, vec2(0.001)));
-  return 1.0 - smoothstep(0.84, 1.06, distanceFromCenter);
+  vec2 p = rotate2(delta, -angle) / max(radius, vec2(0.0005));
+  float r = length(p);
+  if (r >= 1.0) return uv;
+  float weight = 1.0 - smoothstep(0.0, 1.0, r);
+  vec2 source = rotate2((p / (1.0 + strength * weight)) * radius, angle);
+  return uv + uvDelta(source - delta);
+}
+
+// Shrinks a rotated ellipse. The flat centre keeps the face evenly scaled instead of pointy.
+vec2 pinch(vec2 uv, vec2 center, vec2 radius, float angle, float strength) {
+  vec2 delta = metric(uv) - metric(center);
+  vec2 p = rotate2(delta, -angle) / max(radius, vec2(0.0005));
+  float r = length(p);
+  if (r >= 1.0) return uv;
+  float weight = 1.0 - smoothstep(0.38, 1.0, r);
+  vec2 source = rotate2((p * (1.0 + strength * weight)) * radius, angle);
+  return uv + uvDelta(source - delta);
 }
 
 void main() {
   vec2 uv = vUv;
-  float scale = max(uResolution.x, uResolution.y);
 
-  if (uEffect == 1) {
-    vec2 eyeRadius = vec2(0.105, 0.082) * uResolution / scale;
-    for (int i = 0; i < 3; i++) {
-      if (i < uFaceCount) {
-        uv = bulge(uv, uLeftEye[i], eyeRadius, 2.65);
-        uv = bulge(uv, uRightEye[i], eyeRadius, 2.65);
-      }
-    }
-  } else if (uEffect == 2) {
-    vec2 mouthRadius = vec2(0.20, 0.15) * uResolution / scale;
-    for (int i = 0; i < 3; i++) {
-      if (i < uFaceCount) uv = bulge(uv, uMouth[i], mouthRadius, 1.35);
-    }
-  } else if (uEffect == 3) {
-    for (int i = 0; i < 3; i++) {
-      if (i < uFaceCount) uv = pinch(uv, uFaceCenter[i], uFaceRadius[i] * 1.08, 0.66);
-    }
-  }
-
-  vec4 color = texture2D(uVideo, clamp(uv, 0.001, 0.999));
-
-  if (uEffect == 4) {
-    float mask = 0.0;
-    float alienEye = 0.0;
-    for (int i = 0; i < 3; i++) {
-      if (i < uFaceCount) {
-        mask = max(mask, faceMask(vUv, uFaceCenter[i], uFaceRadius[i], uFaceAngle[i]));
-        float leftDistance = length((metric(vUv) - metric(uLeftEye[i])) / vec2(0.055, 0.04));
-        float rightDistance = length((metric(vUv) - metric(uRightEye[i])) / vec2(0.055, 0.04));
-        alienEye = max(alienEye, 1.0 - smoothstep(0.78, 1.0, min(leftDistance, rightDistance)));
-      }
-    }
-    vec3 alienTint = vec3(color.r * 0.72 + color.g * 0.42, color.g * 1.28 + 0.12, color.b * 0.62 + 0.08);
-    color.rgb = mix(color.rgb, alienTint, mask * 0.72);
-    color.rgb = mix(color.rgb, vec3(0.018, 0.025, 0.018), alienEye * 0.96);
-  } else if (uEffect == 5) {
-    for (int i = 0; i < 3; i++) {
-      if (i < uFaceCount) {
-        float mask = faceMask(vUv, uFaceCenter[i], uFaceRadius[i], uFaceAngle[i]);
-        vec2 eyeCenter = (metric(uLeftEye[i]) + metric(uRightEye[i])) * 0.5;
-        vec2 delta = metric(vUv) - eyeCenter;
-        float cosine = cos(uFaceAngle[i]);
-        float sine = sin(uFaceAngle[i]);
-        vec2 rotated = vec2(cosine * delta.x + sine * delta.y, -sine * delta.x + cosine * delta.y);
-        float visorDistance = max(abs(rotated.x) / 0.39, abs(rotated.y) / 0.105);
-        float visorMask = (1.0 - smoothstep(0.94, 1.04, visorDistance)) * mask;
-        vec3 glass = mix(vec3(0.035, 0.07, 0.15), vec3(0.20, 0.42, 0.62), clamp(0.55 - rotated.y, 0.0, 1.0));
-        color.rgb = mix(color.rgb, glass, visorMask * 0.92);
-
-        float leftLight = 1.0 - smoothstep(0.024, 0.045, length(metric(vUv) - metric(uLeftEye[i])));
-        float rightLight = 1.0 - smoothstep(0.024, 0.045, length(metric(vUv) - metric(uRightEye[i])));
-        float glow = (leftLight + rightLight) * visorMask;
-        color.rgb += vec3(0.03, 0.76, 1.0) * glow * 1.6;
+  for (int i = 0; i < 3; i++) {
+    if (i < uFaceCount) {
+      float angle = uFace[i].z;
+      if (uEffect == 1) {
+        uv = bulge(uv, uEyes[i].xy, uRadii[i].xy, angle, 2.2);
+        uv = bulge(uv, uEyes[i].zw, uRadii[i].xy, angle, 2.2);
+      } else if (uEffect == 2) {
+        uv = bulge(uv, uMouthFace[i].xy, uRadii[i].zw, angle, 1.15);
+      } else if (uEffect == 3) {
+        uv = pinch(uv, uMouthFace[i].zw, uFace[i].xy, angle, 0.62);
       }
     }
   }
 
-  gl_FragColor = color;
+  gl_FragColor = texture2D(uVideo, clamp(uv, 0.001, 0.999));
 }
 `
 
+// Alien and Robot are painted by the 2D renderer in cameraEffects.ts (it follows the real face
+// outline), so only the effects that need to warp pixels run through WebGL.
 const effectCode: Partial<Record<CameraEffectId, number>> = {
   'big-eyes': 1,
   'funny-face': 2,
   'tiny-face': 3,
-  alien: 4,
-  robot: 5,
 }
 
 const pointAt = (face: Face, index: number): Point => ({
@@ -180,6 +157,10 @@ export class AdvancedFaceEffectsRenderer {
   private readonly texture: WebGLTexture
   private readonly buffer: WebGLBuffer
   private readonly uniforms: Record<string, WebGLUniformLocation>
+  private readonly eyes = new Float32Array(MAX_FACES * 4)
+  private readonly mouthFace = new Float32Array(MAX_FACES * 4)
+  private readonly radii = new Float32Array(MAX_FACES * 4)
+  private readonly faceData = new Float32Array(MAX_FACES * 4)
   private disposed = false
 
   constructor() {
@@ -217,7 +198,7 @@ export class AdvancedFaceEffectsRenderer {
     gl.enableVertexAttribArray(uv)
     gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 16, 8)
 
-    const uniformNames = ['uVideo', 'uResolution', 'uEffect', 'uFaceCount', 'uLeftEye[0]', 'uRightEye[0]', 'uMouth[0]', 'uFaceCenter[0]', 'uFaceRadius[0]', 'uFaceAngle[0]']
+    const uniformNames = ['uVideo', 'uResolution', 'uEffect', 'uFaceCount', 'uEyes[0]', 'uMouthFace[0]', 'uRadii[0]', 'uFace[0]']
     this.uniforms = Object.fromEntries(uniformNames.map(name => {
       const location = gl.getUniformLocation(this.program, name)
       if (!location) throw new Error(`Missing face-effects shader uniform: ${name}`)
@@ -242,32 +223,49 @@ export class AdvancedFaceEffectsRenderer {
 
     const width = video.videoWidth
     const height = video.videoHeight
-    const trackedFaces = faces.slice(0, 3).flatMap(face => {
-      if (face.length <= 454) return []
-      const left = pointAt(face, 234)
-      const right = pointAt(face, 454)
-      const faceWidth = Math.hypot((right.x - left.x) * width, (right.y - left.y) * height)
-      if (faceWidth < 2) return []
+    const scale = Math.max(width, height)
+    // Distance in pixels between two points returned by pointAt (uv, y already flipped).
+    const px = (a: Point, b: Point) => Math.hypot((b.x - a.x) * width, (b.y - a.y) * height)
+
+    let count = 0
+    for (const face of faces) {
+      if (count >= MAX_FACES) break
+      if (face.length <= 454) continue
+
+      const cheekLeft = pointAt(face, 234)
+      const cheekRight = pointAt(face, 454)
+      const faceWidth = px(cheekLeft, cheekRight)
+      if (faceWidth < 2) continue
+
       const forehead = pointAt(face, 10)
       const chin = pointAt(face, 152)
-      return [{
-        leftEye: midpoint(pointAt(face, 33), pointAt(face, 133)),
-        rightEye: midpoint(pointAt(face, 362), pointAt(face, 263)),
-        mouth: midpoint(pointAt(face, 13), pointAt(face, 14)),
-        center: midpoint(forehead, chin),
-        radius: { x: faceWidth / width * .7, y: faceWidth / height * .78 },
-        angle: Math.atan2((right.y - left.y) * height, (right.x - left.x) * width),
-      }]
-    })
-    if (!trackedFaces.length) return null
+      const faceHeight = Math.max(px(forehead, chin), faceWidth * .6)
+      const leftEye = midpoint(pointAt(face, 33), pointAt(face, 133))
+      const rightEye = midpoint(pointAt(face, 362), pointAt(face, 263))
+      const mouth = midpoint(pointAt(face, 13), pointAt(face, 14))
+      const faceCenter = midpoint(forehead, chin)
 
-    const canvasWidth = width
-    const canvasHeight = height
+      // Eye and mouth sizes come from the real landmarks, not from fixed screen constants.
+      const eyeWidth = Math.max(
+        (px(pointAt(face, 33), pointAt(face, 133)) + px(pointAt(face, 362), pointAt(face, 263))) / 2,
+        faceWidth * .1,
+      )
+      const mouthWidth = Math.max(px(pointAt(face, 61), pointAt(face, 291)), faceWidth * .22)
+      const angle = Math.atan2((cheekRight.y - cheekLeft.y) * height, (cheekRight.x - cheekLeft.x) * width)
 
-    if (this.canvas.width !== canvasWidth || this.canvas.height !== canvasHeight) {
-      this.canvas.width = canvasWidth
-      this.canvas.height = canvasHeight
-      this.gl.viewport(0, 0, canvasWidth, canvasHeight)
+      const o = count * 4
+      this.eyes.set([leftEye.x, leftEye.y, rightEye.x, rightEye.y], o)
+      this.mouthFace.set([mouth.x, mouth.y, faceCenter.x, faceCenter.y], o)
+      this.radii.set([eyeWidth * 1.1 / scale, eyeWidth * .92 / scale, mouthWidth * .95 / scale, mouthWidth * .78 / scale], o)
+      this.faceData.set([faceWidth * .74 / scale, faceHeight * .64 / scale, angle, 0], o)
+      count++
+    }
+    if (!count) return null
+
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width
+      this.canvas.height = height
+      this.gl.viewport(0, 0, width, height)
     }
 
     const gl = this.gl
@@ -278,13 +276,11 @@ export class AdvancedFaceEffectsRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video)
     gl.uniform2f(this.uniforms.uResolution, width, height)
     gl.uniform1i(this.uniforms.uEffect, code)
-    gl.uniform1i(this.uniforms.uFaceCount, trackedFaces.length)
-    gl.uniform2fv(this.uniforms['uLeftEye[0]'], new Float32Array(trackedFaces.flatMap(face => [face.leftEye.x, face.leftEye.y])))
-    gl.uniform2fv(this.uniforms['uRightEye[0]'], new Float32Array(trackedFaces.flatMap(face => [face.rightEye.x, face.rightEye.y])))
-    gl.uniform2fv(this.uniforms['uMouth[0]'], new Float32Array(trackedFaces.flatMap(face => [face.mouth.x, face.mouth.y])))
-    gl.uniform2fv(this.uniforms['uFaceCenter[0]'], new Float32Array(trackedFaces.flatMap(face => [face.center.x, face.center.y])))
-    gl.uniform2fv(this.uniforms['uFaceRadius[0]'], new Float32Array(trackedFaces.flatMap(face => [face.radius.x, face.radius.y])))
-    gl.uniform1fv(this.uniforms['uFaceAngle[0]'], new Float32Array(trackedFaces.map(face => face.angle)))
+    gl.uniform1i(this.uniforms.uFaceCount, count)
+    gl.uniform4fv(this.uniforms['uEyes[0]'], this.eyes)
+    gl.uniform4fv(this.uniforms['uMouthFace[0]'], this.mouthFace)
+    gl.uniform4fv(this.uniforms['uRadii[0]'], this.radii)
+    gl.uniform4fv(this.uniforms['uFace[0]'], this.faceData)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
 
     return this.canvas
