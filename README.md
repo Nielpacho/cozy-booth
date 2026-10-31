@@ -27,6 +27,7 @@ npm run preview
 
 - Browser camera access with front/rear camera preference where supported
 - 22 live camera effects across animal, cute, funny, and seasonal collections, with MediaPipe face tracking for positioned accessories and eye magnification
+- A local WebGL shader layer for face warping, alien tinting, and robot visor effects; it reuses the existing camera stream and landmarks, supports up to three faces, and falls back to the built-in canvas renderer when WebGL is unavailable
 - Face effects composited into captured photos and retained in downloaded photo strips
 - 2, 3, or 4-photo strip
 - 3, 5, or 10-second countdown
@@ -40,7 +41,7 @@ npm run preview
 - 40 photo filters, including Vintage, Pastel, Cinematic, Korean Aesthetic, Japanese Film, Y2K, Polaroid, and more; applied to strip previews and exports
 - Caption, title, draggable emoji decorations
 - PNG or JPEG export with decorations and caption rendered into the image
-- Automatic local video recording from the first countdown until the photo strip is complete, with video download and iOS share-sheet support for saving to Photos
+- Automatic local video recording from the first countdown until the photo strip is complete, with browser-supported MP4/WebM downloads and iOS share-sheet support for saving to Photos
 - Responsive desktop and mobile layout
 
 ## Privacy

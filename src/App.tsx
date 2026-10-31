@@ -3,6 +3,7 @@ import { Camera, CameraOff, ChevronLeft, ChevronRight, Check, Download, Film, He
 import { FaceLandmarker, FilesetResolver, type NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { getStripDesign, stripDesigns, type DesignCategory, type FrameStyle, type StripLayout } from './stripDesigns'
 import { cameraEffects, renderCameraFrame, type CameraEffectCategory, type CameraEffectId } from './cameraEffects'
+import { AdvancedFaceEffectsRenderer } from './advancedFaceEffects'
 
 type Shot = { id: number; url: string }
 type Decor = { id: number; emoji: string; x: number; y: number; size: number; rotation: number }
@@ -78,6 +79,7 @@ export default function App() {
   const cameraCanvasRef = useRef<HTMLCanvasElement>(null)
   const faceLandmarkerRef = useRef<FaceLandmarker | null>(null)
   const faceLandmarkerLoadingRef = useRef<Promise<FaceLandmarker> | null>(null)
+  const advancedFaceEffectsRef = useRef<AdvancedFaceEffectsRenderer | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
@@ -155,8 +157,8 @@ export default function App() {
     }
 
     const supportedTypes = appleMobile
-      ? ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-      : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4']
+      ? ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm']
+      : ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm', 'video/webm;codecs=vp9']
     const mimeType = typeof MediaRecorder.isTypeSupported === 'function'
       ? supportedTypes
         .find(type => MediaRecorder.isTypeSupported(type))
@@ -169,7 +171,9 @@ export default function App() {
       videoSessionCompleteRef.current = false
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       recorder.ondataavailable = event => {
-        if (event.data.size > 0) recordedChunksRef.current.push(event.data)
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
       }
       recorder.onstop = () => {
         const completed = recordingCompletedRef.current
@@ -177,16 +181,26 @@ export default function App() {
         videoSessionCompleteRef.current = completed
         recorderRef.current = null
         setVideoRecording(false)
-        if (completed && recordedChunksRef.current.length) {
-          const fallbackType = appleMobile ? 'video/mp4' : 'video/webm'
-          const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || fallbackType })
-          if (blob.size > 0) {
+        const chunks = recordedChunksRef.current
+        if (completed && chunks.length) {
+          const actualType = recorder.mimeType || chunks.find(chunk => chunk.type)?.type || ''
+          const mimeType = actualType.split(';')[0].toLowerCase()
+          const extension = mimeType === 'video/mp4' ? 'mp4' : mimeType === 'video/webm' ? 'webm' : ''
+          const blob = new Blob(chunks, { type: mimeType })
+          if (blob.size > 0 && extension) {
             const url = URL.createObjectURL(blob)
             videoUrlRef.current = url
             videoBlobRef.current = blob
             setVideoUrl(url)
-            setVideoExtension(blob.type.includes('mp4') ? 'mp4' : blob.type.includes('webm') ? 'webm' : appleMobile ? 'mp4' : 'webm')
+            setVideoExtension(extension)
+            setCameraError('')
+          } else {
+            console.error('Video recording returned an unsupported format:', actualType)
+            setCameraError('Your browser recorded the session in an unsupported video format. Your photos are still available.')
           }
+        } else if (completed) {
+          console.error('Video recording completed without any video data.')
+          setCameraError('The video recording was empty. Your photos are still available; please try again.')
         }
         recordedChunksRef.current = []
       }
@@ -307,6 +321,7 @@ export default function App() {
     let lastDetection = 0
     let lastStatusUpdate = 0
     let faces: NormalizedLandmark[][] = []
+    let effectRenderingFailed = false
 
     setCameraEffectError('')
     if (cameraEffect === 'none') {
@@ -314,11 +329,23 @@ export default function App() {
       return
     }
 
+    const gpuEffect = ['big-eyes', 'funny-face', 'tiny-face', 'alien', 'robot'].includes(cameraEffect)
+    if (gpuEffect && !advancedFaceEffectsRef.current) {
+      try {
+        advancedFaceEffectsRef.current = new AdvancedFaceEffectsRenderer()
+      } catch (error) {
+        console.error('Advanced face effects could not start; using the built-in renderer instead:', error)
+        setCameraEffectStatus('Advanced GPU effects are unavailable; using the built-in face effect.')
+      }
+    }
+
     setCameraEffectStatus('Loading face tracking…')
     void loadFaceLandmarker().then(landmarker => {
       if (active) {
         detector = landmarker
-        setCameraEffectStatus('Face tracking ready · processed on your device')
+        setCameraEffectStatus(gpuEffect && !advancedFaceEffectsRef.current
+          ? 'Face tracking ready · using the built-in face effect'
+          : 'Face tracking ready · processed on your device')
       }
     }).catch(error => {
       console.error('Face tracking could not start:', error)
@@ -354,7 +381,32 @@ export default function App() {
             setCameraEffectError('Face tracking stopped unexpectedly. The camera still works; choose No Effect or try again.')
           }
         }
-        renderCameraFrame(ctx, video, faces, cameraEffect, now)
+        if (effectRenderingFailed) {
+          ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight)
+        } else {
+          try {
+            let advancedFrame: HTMLCanvasElement | null = null
+            if (gpuEffect && advancedFaceEffectsRef.current) {
+              try {
+                advancedFrame = advancedFaceEffectsRef.current.render(video, faces, cameraEffect)
+              } catch (error) {
+                console.error('Advanced face-effect rendering failed; using the built-in renderer instead:', error)
+                advancedFaceEffectsRef.current.dispose()
+                advancedFaceEffectsRef.current = null
+                setCameraEffectStatus('Advanced GPU effects stopped; using the built-in face effect.')
+              }
+            }
+            renderCameraFrame(ctx, video, faces, cameraEffect, now, advancedFrame)
+          } catch (error) {
+            console.error('Camera effect rendering failed:', error)
+            effectRenderingFailed = true
+            faces = []
+            setCameraEffect('none')
+            setCameraEffectError('This effect could not render on your device, so it was turned off. Your live camera is still working.')
+            setCameraEffectStatus('Choose another effect to try again.')
+            ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight)
+          }
+        }
       }
       animationFrame = window.requestAnimationFrame(renderFrame)
     }
@@ -366,12 +418,22 @@ export default function App() {
     }
   }, [cameraEffect, cameraOn, loadFaceLandmarker])
 
+  useEffect(() => {
+    if (!cameraOn) return
+    return () => {
+      advancedFaceEffectsRef.current?.dispose()
+      advancedFaceEffectsRef.current = null
+    }
+  }, [cameraOn])
+
   useEffect(() => () => {
     recordingCompletedRef.current = false
     if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop()
     streamRef.current?.getTracks().forEach(track => track.stop())
     faceLandmarkerRef.current?.close()
     faceLandmarkerRef.current = null
+    advancedFaceEffectsRef.current?.dispose()
+    advancedFaceEffectsRef.current = null
     if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current)
   }, [])
 
@@ -677,30 +739,37 @@ export default function App() {
     if (!blob || !url) return
 
     const filename = `cozy-booth-photo-session.${videoExtension}`
-    const type = blob.type || (videoExtension === 'mp4' ? 'video/mp4' : 'video/webm')
+    const type = blob.type
     const file = new File([blob], filename, { type })
 
-    if (typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+    if (appleMobile && typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ files: [file], title: 'Cozy Booth photo session' })
-        setNotice(appleMobile ? 'Use “Save Video” in the share sheet to add it to Photos.' : 'Your video was shared successfully.')
+        setNotice('Choose “Save Video” in the share sheet to add it to Photos.')
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         console.error('Video share error:', error)
-        setNotice('Could not share the video. Try opening it and saving it from your browser.')
+        setNotice('Could not open the share sheet. Use “Open video” and save it from the video player instead.')
       }
       return
     }
 
     const link = document.createElement('a')
     link.href = url
-    link.download = filename
     if (appleMobile) {
       link.target = '_blank'
       link.rel = 'noopener'
+    } else {
+      link.download = filename
     }
+    link.type = type
+    link.hidden = true
+    document.body.appendChild(link)
     link.click()
-    if (appleMobile) setNotice('Video opened in a new tab. Tap Share, then choose “Save Video” to save it to Photos.')
+    link.remove()
+    setNotice(appleMobile
+      ? 'Video opened in a new tab. Tap Share, then choose “Save Video” or “Save to Files”.'
+      : 'Your video download has started.')
   }
 
   const reset = () => {
@@ -962,10 +1031,15 @@ export default function App() {
                 </div>
               </div>
               {(videoRecording || videoUrl) && <div className="video-export">
-                <span>{videoRecording ? <><i/> Video recording in progress</> : <><Film size={14}/> Your photo session video is ready</>}</span>
-                {videoUrl && <button className="video-download" type="button" onClick={downloadVideo}><Download size={14}/>{appleMobile ? 'Save to Photos' : 'Download video'}</button>}
+                <span>{videoRecording
+                  ? <><i/> Video recording in progress</>
+                  : <><Film size={14}/> Video ready · {videoExtension.toUpperCase()}</>}</span>
+                {videoUrl && (appleMobile
+                  ? <button className="video-download" type="button" onClick={downloadVideo}><Download size={14}/>Save / Share video</button>
+                  : <a className="video-download" href={videoUrl} download={`cozy-booth-photo-session.${videoExtension}`} type={videoBlobRef.current?.type}><Download size={14}/>Download {videoExtension.toUpperCase()}</a>)}
+                {videoUrl && appleMobile && <a className="video-open" href={videoUrl} target="_blank" rel="noopener">Open video</a>}
               </div>}
-              {videoUrl && appleMobile && <p className="ios-video-hint">If the share sheet opens, tap “Save Video” to add it to your Photos library.</p>}
+              {videoUrl && appleMobile && <p className="ios-video-hint">Use “Save / Share video” and choose “Save Video” for Photos. If sharing is unavailable, tap “Open video”, then use the player’s Share button to save it to Photos or Files.</p>}
               {notice && <div className="success-note">{notice}</div>}
             </section>
           </div>
