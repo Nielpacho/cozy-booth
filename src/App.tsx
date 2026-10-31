@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Camera, CameraOff, ChevronLeft, ChevronRight, Download, Film, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Trash2, Undo2, SwitchCamera, Check } from 'lucide-react'
+import { Camera, CameraOff, ChevronLeft, ChevronRight, Check, Download, Film, Heart, ImagePlus, RefreshCw, Settings2, Sparkles, Trash2, Undo2, SwitchCamera, X } from 'lucide-react'
+import { FaceLandmarker, FilesetResolver, type NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { getStripDesign, stripDesigns, type DesignCategory, type FrameStyle, type StripLayout } from './stripDesigns'
+import { cameraEffects, renderCameraFrame, type CameraEffectCategory, type CameraEffectId } from './cameraEffects'
 
 type Shot = { id: number; url: string }
 type Decor = { id: number; emoji: string; x: number; y: number; size: number; rotation: number }
@@ -73,6 +75,9 @@ const roundedRectPath = (ctx: CanvasRenderingContext2D, x: number, y: number, wi
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const cameraCanvasRef = useRef<HTMLCanvasElement>(null)
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null)
+  const faceLandmarkerLoadingRef = useRef<Promise<FaceLandmarker> | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
@@ -87,6 +92,10 @@ export default function App() {
   const [cameraOn, setCameraOn] = useState(false)
   const [facing, setFacing] = useState<'user' | 'environment'>('user')
   const [cameraError, setCameraError] = useState('')
+  const [cameraEffect, setCameraEffect] = useState<CameraEffectId>('none')
+  const [cameraEffectCategory, setCameraEffectCategory] = useState<CameraEffectCategory>('all')
+  const [cameraEffectError, setCameraEffectError] = useState('')
+  const [cameraEffectStatus, setCameraEffectStatus] = useState('')
   const [shots, setShots] = useState<Shot[]>([])
   const [count, setCount] = useState(4)
   const [seconds, setSeconds] = useState(3)
@@ -247,10 +256,122 @@ export default function App() {
     }
   }, [cameraOn])
 
+  const loadFaceLandmarker = useCallback(async () => {
+    if (faceLandmarkerRef.current) return faceLandmarkerRef.current
+    if (!faceLandmarkerLoadingRef.current) {
+      faceLandmarkerLoadingRef.current = (async () => {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm',
+        )
+        const options = {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+            delegate: 'GPU' as const,
+          },
+          runningMode: 'VIDEO' as const,
+          numFaces: 3,
+          outputFaceBlendshapes: false,
+        }
+        let landmarker: FaceLandmarker
+        try {
+          landmarker = await FaceLandmarker.createFromOptions(vision, options)
+        } catch (gpuError) {
+          console.warn('GPU face tracking is unavailable; using CPU tracking instead.', gpuError)
+          landmarker = await FaceLandmarker.createFromOptions(vision, {
+            ...options,
+            baseOptions: { ...options.baseOptions, delegate: 'CPU' },
+          })
+        }
+        faceLandmarkerRef.current = landmarker
+        return landmarker
+      })()
+    }
+
+    try {
+      return await faceLandmarkerLoadingRef.current
+    } catch (error) {
+      faceLandmarkerLoadingRef.current = null
+      throw error
+    }
+  }, [])
+
+  useEffect(() => {
+    const video = videoRef.current
+    const canvas = cameraCanvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!cameraOn || !video || !canvas || !ctx) return
+
+    let active = true
+    let animationFrame = 0
+    let detector = faceLandmarkerRef.current
+    let lastDetection = 0
+    let lastStatusUpdate = 0
+    let faces: NormalizedLandmark[][] = []
+
+    setCameraEffectError('')
+    if (cameraEffect === 'none') {
+      setCameraEffectStatus('Camera frames stay on your device.')
+      return
+    }
+
+    setCameraEffectStatus('Loading face tracking…')
+    void loadFaceLandmarker().then(landmarker => {
+      if (active) {
+        detector = landmarker
+        setCameraEffectStatus('Face tracking ready · processed on your device')
+      }
+    }).catch(error => {
+      console.error('Face tracking could not start:', error)
+      if (active) {
+        setCameraEffectError('Face tracking could not load. Check your internet connection, then try selecting the effect again.')
+        setCameraEffectStatus('Live camera is still available without face tracking.')
+      }
+    })
+
+    const renderFrame = (now: number) => {
+      if (!active) return
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth) {
+        if (detector && now - lastDetection >= 67) {
+          try {
+            const detectedFaces = detector.detectForVideo(video, now).faceLandmarks
+            faces = detectedFaces.map((face, faceIndex) => face.map((landmark, landmarkIndex) => {
+              const previous = faces[faceIndex]?.[landmarkIndex]
+              return previous
+                ? { ...landmark, x: previous.x * .35 + landmark.x * .65, y: previous.y * .35 + landmark.y * .65 }
+                : landmark
+            }))
+            lastDetection = now
+            if (now - lastStatusUpdate > 800) {
+              setCameraEffectStatus(faces.length
+                ? `Tracking ${faces.length} face${faces.length === 1 ? '' : 's'} · processed on your device`
+                : 'No face found yet · move into the camera view')
+              lastStatusUpdate = now
+            }
+          } catch (error) {
+            console.error('Face tracking failed:', error)
+            detector = null
+            faces = []
+            setCameraEffectError('Face tracking stopped unexpectedly. The camera still works; choose No Effect or try again.')
+          }
+        }
+        renderCameraFrame(ctx, video, faces, cameraEffect, now)
+      }
+      animationFrame = window.requestAnimationFrame(renderFrame)
+    }
+
+    animationFrame = window.requestAnimationFrame(renderFrame)
+    return () => {
+      active = false
+      window.cancelAnimationFrame(animationFrame)
+    }
+  }, [cameraEffect, cameraOn, loadFaceLandmarker])
+
   useEffect(() => () => {
     recordingCompletedRef.current = false
     if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop()
     streamRef.current?.getTracks().forEach(track => track.stop())
+    faceLandmarkerRef.current?.close()
+    faceLandmarkerRef.current = null
     if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current)
   }, [])
 
@@ -266,11 +387,16 @@ export default function App() {
       ctx.translate(canvas.width, 0)
       ctx.scale(-1, 1)
     }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const compositedFrame = cameraEffect === 'none' ? null : cameraCanvasRef.current
+    if (compositedFrame?.width && compositedFrame.height) {
+      ctx.drawImage(compositedFrame, 0, 0, canvas.width, canvas.height)
+    } else {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    }
     const url = canvas.toDataURL('image/jpeg', .94)
     setShots(prev => [...prev, { id: Date.now() + Math.random(), url }])
     return true
-  }, [facing])
+  }, [cameraEffect, facing])
 
   const beginCapture = async () => {
     if (!cameraOn) { await startCamera(); return }
@@ -310,6 +436,9 @@ export default function App() {
     christmas: christmasStickers,
   }
   const availableStickers = [...new Set(stickerLibraries[stickerCategory])]
+  const visibleCameraEffects = cameraEffects.filter(effect =>
+    effect.id === 'none' || cameraEffectCategory === 'all' || effect.category === cameraEffectCategory,
+  )
 
   const stripDimensions = useMemo(() => {
     const rows = layout === 'vertical' ? count : Math.ceil(count / 2)
@@ -647,13 +776,55 @@ export default function App() {
                   autoPlay
                   playsInline
                   muted
-                  className={`camera-video ${facing === 'user' ? 'mirrored' : ''}`}
+                  className={`camera-video ${cameraEffect === 'none' ? 'camera-live' : 'camera-source'} ${facing === 'user' ? 'mirrored' : ''}`}
                   style={{ display: cameraOn ? 'block' : 'none' }}
+                />
+                <canvas
+                  ref={cameraCanvasRef}
+                  className={`camera-composite ${facing === 'user' ? 'mirrored' : ''}`}
+                  style={{ display: cameraOn && cameraEffect !== 'none' ? 'block' : 'none' }}
+                  aria-label="Live camera preview with selected effect"
                 />
                 {!cameraOn && <div className="camera-placeholder"><div className="camera-icon"><CameraOff size={30}/></div><strong>Your camera goes here</strong><span>Allow camera access when you're ready ♡</span></div>}
                 {countdown !== null && <div className="countdown-overlay"><span>{countdown === 0 ? '✦' : countdown}</span><small>get ready!</small></div>}
                 <span className="camera-corner">LIVE PREVIEW</span>
               </div>
+              <section className="camera-effects" aria-label="Camera effects">
+                <div className="camera-effects-heading">
+                  <div><strong>Face effects</strong><span>Pick one to preview it live</span></div>
+                  {cameraEffect !== 'none' && <button type="button" className="clear-effect" onClick={() => setCameraEffect('none')}><X size={13}/> Clear</button>}
+                </div>
+                <div className="camera-effect-categories" aria-label="Effect categories">
+                  {(['all', 'animals', 'cute', 'funny', 'seasonal'] as const).map(category => (
+                    <button
+                      type="button"
+                      key={category}
+                      className={cameraEffectCategory === category ? 'active' : ''}
+                      aria-pressed={cameraEffectCategory === category}
+                      onClick={() => setCameraEffectCategory(category)}
+                    >{category === 'all' ? 'All' : category[0].toUpperCase() + category.slice(1)}</button>
+                  ))}
+                </div>
+                <div className="camera-effect-list" role="group" aria-label="Choose a camera effect">
+                  {visibleCameraEffects.map(effect => (
+                    <button
+                      type="button"
+                      key={effect.id}
+                      className={`camera-effect-card ${cameraEffect === effect.id ? 'selected' : ''}`}
+                      aria-pressed={cameraEffect === effect.id}
+                      onClick={() => setCameraEffect(effect.id)}
+                    >
+                      <span className="camera-effect-icon" aria-hidden="true">{effect.icon}</span>
+                      <span className="camera-effect-name">{effect.name}</span>
+                      {cameraEffect === effect.id && <span className="camera-effect-check"><Check size={11}/></span>}
+                    </button>
+                  ))}
+                </div>
+                <p className={`camera-effects-status ${cameraEffectError ? 'has-error' : ''}`} aria-live="polite">
+                  {cameraEffectError || cameraEffectStatus || (cameraOn ? 'Camera frames stay on your device.' : 'Choose an effect, then enable the camera to try it.')}
+                </p>
+                <p className="camera-effects-privacy">Face tracking runs locally in your browser. The model loads when you first choose an effect; camera images are never uploaded.</p>
+              </section>
               {cameraError && <div className="error-box">{cameraError}</div>}
               <div className="camera-settings">
                 <label>PHOTOS PER STRIP<select value={count} disabled={busy || videoRecording} onChange={e => { const nextCount = Number(e.target.value); setCount(nextCount); setShots(current => current.slice(0, nextCount)) }}><option value={2}>2 photos</option><option value={3}>3 photos</option><option value={4}>4 photos</option></select></label>
@@ -805,7 +976,7 @@ export default function App() {
           <div className="how-grid"><div><span>01</span><h3>Get camera-ready</h3><p>Allow camera access and choose how many moments to capture.</p></div><div><span>02</span><h3>Make it yours</h3><p>Pick a soft filter, a pretty background, and add your favorite stickers.</p></div><div><span>03</span><h3>Keep the memory</h3><p>Download your finished strip and share it with someone special.</p></div></div>
         </section>
       </main>
-      <footer><a className="brand" href="#"><span className="brand-mark">♡</span><span>cozy booth</span></a><span>made with a little love ✿</span><span>© {new Date().getFullYear()} Cozy Booth</span></footer>
+      <footer><a className="brand" href="#"><span className="brand-mark">♡</span><span>cozy booth</span></a><span>made with a little love ✿</span><span>Created by Nielp</span><span>© {new Date().getFullYear()} Cozy Booth</span></footer>
     </div>
   )
 }

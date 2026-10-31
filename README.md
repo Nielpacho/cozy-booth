@@ -26,6 +26,8 @@ npm run preview
 ## Features
 
 - Browser camera access with front/rear camera preference where supported
+- 22 live camera effects across animal, cute, funny, and seasonal collections, with MediaPipe face tracking for positioned accessories and eye magnification
+- Face effects composited into captured photos and retained in downloaded photo strips
 - 2, 3, or 4-photo strip
 - 3, 5, or 10-second countdown
 - Retake and undo last photo
@@ -43,7 +45,11 @@ npm run preview
 
 ## Privacy
 
-Photos are captured and processed locally in the browser. This starter does not upload photos to a server.
+Camera permission is requested only when the camera is enabled. Photos, face landmarks, and live effects are processed locally in the browser; this app does not upload them. The face-tracking model and WebAssembly runtime are downloaded from jsDelivr and Google when an effect is first used, so an internet connection is needed for the initial load. Use HTTPS (or localhost) for camera access, and turn the camera off with the visible camera control when finished.
+
+## Frontend code visibility
+
+Production builds are minified and do not include source maps, which makes the shipped files less readable. Browser code must still be sent to each visitor, so it cannot be fully hidden or made impossible to copy with DevTools. Keep secrets and sensitive business logic on a server rather than in this frontend.
 
 ## Before publishing
 
